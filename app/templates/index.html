@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>单人立直麻将</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="panel controls">
+      <div class="brand">
+        <p class="eyebrow">Python + 浏览器</p>
+        <h1>单人立直麻将</h1>
+        <p class="muted">浏览器前端，单人对战，其余玩家为 L1-L3 AI。</p>
+      </div>
+
+      <form id="create-game-form" class="stack">
+        <label>
+          <span>玩家名</span>
+          <input id="player-name" name="player_name" type="text" maxlength="32" placeholder="访客">
+        </label>
+
+        <label>
+          <span>模式</span>
+          <select id="mode" name="mode">
+            <option value="4P">四麻</option>
+            <option value="3P">三麻</option>
+          </select>
+        </label>
+
+        <label>
+          <span>场次</span>
+          <select id="round-length" name="round_length">
+            <option value="EAST">东风战</option>
+            <option value="HANCHAN">半庄战</option>
+          </select>
+        </label>
+
+        <div id="ai-config" class="stack compact"></div>
+
+        <button class="primary" type="submit">开始新对局</button>
+      </form>
+
+      <section class="box">
+        <div class="section-head">
+          <h2>玩家统计</h2>
+          <button id="refresh-stats" class="ghost" type="button">刷新</button>
+        </div>
+        <div id="player-stats" class="stats-grid muted">暂无数据</div>
+      </section>
+
+      <section class="box">
+        <div class="section-head">
+          <h2>历史对局</h2>
+          <button id="refresh-games" class="ghost" type="button">刷新</button>
+        </div>
+        <div id="saved-games" class="saved-games muted">暂无存档</div>
+      </section>
+    </aside>
+
+    <main class="table-stage">
+      <section class="panel table-panel">
+        <div class="mahjong-table">
+          <div id="seat-top" class="seat-frame seat-top"></div>
+          <div id="seat-left" class="seat-frame seat-left"></div>
+
+          <section class="table-center">
+            <div class="center-ring">
+              <p class="eyebrow">牌桌状态</p>
+              <h2 id="round-label">等待开局</h2>
+              <p id="prompt" class="muted">创建一局后，这里会显示当前行动提示。</p>
+            </div>
+
+            <div class="center-stats">
+              <div class="center-stat">
+                <span>剩余牌</span>
+                <strong id="remaining-tiles">-</strong>
+              </div>
+              <div class="center-stat">
+                <span>本场</span>
+                <strong id="honba">-</strong>
+              </div>
+              <div class="center-stat">
+                <span>供托</span>
+                <strong id="riichi-sticks">-</strong>
+              </div>
+            </div>
+
+            <div class="center-last">
+              <span>当前弃牌</span>
+              <strong id="last-discard">-</strong>
+            </div>
+
+            <div class="center-dora">
+              <span>宝牌</span>
+              <div id="dora-list" class="dora-strip">-</div>
+            </div>
+          </section>
+
+          <div id="seat-right" class="seat-frame seat-right"></div>
+
+          <section class="seat-frame seat-bottom self-seat">
+            <div class="seat-meta">
+              <div>
+                <h2>你的座位</h2>
+                <p id="bottom-seat-name" class="muted">等待开局</p>
+              </div>
+              <div class="inline-status">
+                <span>状态：</span>
+                <strong id="game-status">未开始</strong>
+              </div>
+            </div>
+
+            <div id="bottom-seat-summary" class="bottom-seat-summary muted">开局后显示你的点数、风位与副露信息。</div>
+            <div id="bottom-seat-melds" class="meld-river"></div>
+            <div id="bottom-seat-river" class="discard-river"></div>
+
+            <div id="hint-box" class="hint-box muted">提示区会显示向听数与推荐打牌。</div>
+            <div id="special-actions" class="special-actions"></div>
+            <div id="human-hand" class="human-hand"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <aside class="panel sidebar">
+      <section class="box">
+        <div class="section-head">
+          <h2>动作日志</h2>
+          <button id="load-replay" class="ghost" type="button">读取回放</button>
+        </div>
+        <div id="log-tail" class="log-tail muted">对局动作会显示在这里。</div>
+      </section>
+
+      <section class="box">
+        <div class="section-head">
+          <h2>回放</h2>
+          <button id="leave-replay" class="ghost" type="button" disabled>返回实时局面</button>
+        </div>
+        <div class="stack compact">
+          <input id="replay-slider" type="range" min="0" max="0" value="0" disabled>
+          <div id="replay-meta" class="muted">尚未载入回放。</div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <template id="ai-level-template">
+    <label>
+      <span class="ai-label"></span>
+      <select class="ai-level-select">
+        <option value="1">L1</option>
+        <option value="2" selected>L2</option>
+        <option value="3">L3</option>
+      </select>
+    </label>
+  </template>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

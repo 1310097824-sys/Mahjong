@@ -1,0 +1,67 @@
+现在这个“行动提示”，本质上是后端一套“牌效优先 + 简化防守 + 保留价值牌”的启发式评分，不是雀魂那种更深的搜索型 AI。
+
+关键逻辑在 D:\py\Mahjong\app\engine.py (line 1955) 到 D:\py\Mahjong\app\engine.py (line 2059)，前端只是把结果展示出来，位置在 D:\py\Mahjong\riichi-mahjong-ui\src\components\Mahjong\Table.tsx (line 1603)。
+
+它现在的流程是：
+
+只在“轮到你打牌”的时候显示
+不是你回合就直接不生成提示，这段在 D:\py\Mahjong\app\engine.py (line 2283)。
+
+对你手里每一张可打出的牌，都模拟“如果打这张会怎样”
+用 discard_profile() 逐张算，见 D:\py\Mahjong\app\engine.py (line 2026)。
+
+向听
+先把这张牌移出手牌，再用 mahjong 库的 Shanten 算向听数。
+
+进张
+它会枚举 34 种牌，看“摸到哪几种牌会让向听变好，或从听牌变和牌”，把这些算进有效进张，逻辑在 D:\py\Mahjong\app\engine.py (line 1955)。
+但这里有个很重要的现实差异：
+它现在的“剩余张数”是按 4 - 你自己手里已有几张 算的，见 D:\py\Mahjong\app\engine.py (line 1975)，没有扣掉牌河、副露、宝牌指示里已经看见的牌。
+所以现在的 进张 更像“理论进张”，不是严格的“场上真实剩余进张”。
+
+风险
+风险只对“已经立直的对手”生效，见 D:\py\Mahjong\app\engine.py (line 1981)。
+大概规则是：
+
+对立直家现物，风险基本视为 0，见 D:\py\Mahjong\app\engine.py (line 1990)
+字牌更安全，幺九次之，中张更危险
+如果满足筋，就乘一个 0.7 的折扣，见 D:\py\Mahjong\app\engine.py (line 2005)
+价值牌惩罚
+如果你打的是这些牌，会被额外扣分，逻辑在 D:\py\Mahjong\app\engine.py (line 2009)：
+
+赤宝牌
+现宝牌
+自风牌
+场风牌
+所以它天然会偏向“少拆宝牌、少拆役牌”。
+综合值
+就是把上面几项加权成一个分数。
+公式分 L1/L2/L3 三档，见：
+
+D:\py\Mahjong\app\engine.py (line 2038)
+D:\py\Mahjong\app\engine.py (line 2040)
+D:\py\Mahjong\app\engine.py (line 2043)
+大意是：
+
+L1: 更偏基础牌效，几乎不认真防守，还带一点随机性
+L2: 牌效 + 风险平衡
+L3: 更重视进张，也更重视防守；如果落后很多，还会更进攻
+最值得注意的一点是：
+
+你的“行动提示面板”固定用的是 L3 公式，不管你电脑选的是 L1/L2/L3
+代码就在 D:\py\Mahjong\app\engine.py (line 2292)
+真正 AI 出牌时，才会按各自难度去用同一套评分骨架，见 D:\py\Mahjong\app\engine.py (line 2595) 到 D:\py\Mahjong\app\engine.py (line 2598)
+所以一句话总结：
+
+现在的行动提示逻辑 = “按 L3 口径做的启发式弃牌推荐”，核心目标是：
+
+少增向听
+多留进张
+尽量避危险牌
+尽量别拆赤宝/宝牌/风牌
+它目前还不是雀魂那种更完整的逻辑，因为它还没有认真做到这些：
+
+没有扣掉场上可见牌后的真实进张
+没有系统评估副露手威胁
+没有完整做役种路线规划
+没有按巡目、点棒差、亲子场况做更深层搜索

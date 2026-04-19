@@ -1,0 +1,12 @@
+.env
+mahjong.db
+*.log
+*.pid
+*.pyc
+
+__pycache__/
+.playwright-cli/
+output/
+
+riichi-mahjong-ui/node_modules/
+riichi-mahjong-ui/.git/
