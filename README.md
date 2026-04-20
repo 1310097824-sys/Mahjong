@@ -1,109 +1,134 @@
-# Browser Riichi Mahjong
+# 单人立直麻将
 
-基于文档实现的浏览器版单人立直麻将原型，采用 `FastAPI + Python` 后端和 `React + Vite` 前端。
+基于 `FastAPI + React + MySQL` 的浏览器版单人立直麻将系统。项目目标是做一套本地可运行的雀魂风格立直麻将练习桌，支持三麻、四麻、牌谱回看、历史对局、规则审计和 L1/L2/L3 电脑对手。
 
-当前版本重点覆盖：
+当前版本已推送为 `v1.0`，远程仓库：
 
-- React 浏览器牌桌界面
-- 四麻 / 三麻开局
-- 单人对战，其余座位为 L1 / L2 / L3 AI
-- 出牌、立直、荣和、自摸、吃、碰、杠、三麻拔北
-- 动作日志、对局存档、基础回放
-- 本地统计与历史对局列表
+https://github.com/1310097824-sys/Mahjong
 
-当前实现更偏 MVP，可直接运行试玩；更细的途中流局、振听边界和雀魂差异规则还可以继续补强。
+## 功能特性
 
-## 运行
+- 浏览器前端牌桌，使用 React + Vite 构建。
+- FastAPI 后端，提供开局、操作、回放、历史对局和统计接口。
+- 默认使用 MySQL 保存历史对局、回放快照和统计数据。
+- 支持四麻、三麻、东风场、半庄战。
+- 支持雀魂规则档位：段位默认、友人场、古役房。
+- 支持三麻 `自摸损` 与 `北家点数折半分摊` 两种结算方式。
+- 支持 L1/L2/L3 电脑强度。
+- 支持牌谱回看、动作记录、结算面板、支付明细和符数来源展示。
+- 支持行动提示，结合向听、真实可见牌进张、风险、副露威胁和手役路线做推荐。
+- 内置雀魂规则自动化审计脚本。
 
-1. 安装 Python 依赖
+## 技术栈
 
-```bash
-python -m pip install -r requirements.txt
+- 后端：Python、FastAPI、SQLAlchemy、PyMySQL
+- 前端：React、TypeScript、Vite、Tailwind CSS
+- 数据库：MySQL 8
+- 规则与算番：Python 立直麻将相关库 + 项目内规则状态机
+
+## 快速启动
+
+推荐直接使用一键脚本：
+
+```powershell
+D:\py\Mahjong\start_mahjong_system.cmd
 ```
 
-2. 安装 React 依赖
+停止系统：
 
-```bash
-cd riichi-mahjong-ui
-npm.cmd install
+```powershell
+D:\py\Mahjong\stop_mahjong_system.cmd
 ```
 
-3. 构建 React 前端
-
-```bash
-npm.cmd run build
-cd ..
-```
-
-4. 启动服务
-
-```bash
-uvicorn app.main:app --reload --app-dir D:\py\Mahjong
-```
-
-5. 打开浏览器
+启动后打开：
 
 ```text
 http://127.0.0.1:8000
 ```
 
-## One-Click Scripts
+## 手动启动
 
-项目根目录提供了两个可双击的一键脚本：
+1. 安装后端依赖：
 
-```text
-start_mahjong_system.cmd
-stop_mahjong_system.cmd
+```powershell
+cd D:\py\Mahjong
+D:\py\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-- `start_mahjong_system.cmd`：检查 `MySQL80`，必要时请求管理员权限启动 MySQL，然后拉起后端并自动打开浏览器。
-- `stop_mahjong_system.cmd`：关闭 8000 端口上的麻将后端进程，默认不停止 MySQL，避免影响其他项目。
+2. 安装并构建前端：
 
-## 前端开发模式
+```powershell
+cd D:\py\Mahjong\riichi-mahjong-ui
+npm.cmd install
+npm.cmd run build
+```
 
-如果你想单独调 React 页面：
+3. 启动后端：
 
-```bash
-cd riichi-mahjong-ui
+```powershell
+cd D:\py\Mahjong
+D:\py\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir D:\py\Mahjong
+```
+
+## 数据库配置
+
+项目默认读取根目录 `.env` 或环境变量：
+
+```powershell
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=你的密码
+MYSQL_DATABASE=mahjong
+```
+
+也可以直接设置：
+
+```powershell
+DATABASE_URL=mysql+pymysql://root:password@127.0.0.1:3306/mahjong?charset=utf8mb4
+```
+
+首次启动时，后端会自动创建数据库和表结构。
+
+如果需要从旧的 SQLite 数据迁移：
+
+```powershell
+cd D:\py\Mahjong
+D:\py\.venv\Scripts\python.exe migrate_sqlite_to_mysql.py
+```
+
+## 前端开发
+
+如果只调试 React 前端：
+
+```powershell
+cd D:\py\Mahjong\riichi-mahjong-ui
 npm.cmd run dev
 ```
 
-默认会通过 `Vite proxy` 把 `/api` 请求转发到 `http://127.0.0.1:8000`，所以本地调试时只要 FastAPI 服务同时开着即可。
+Vite 会把 `/api` 请求代理到本地 FastAPI 服务。
 
-## 数据库
+## 规则审计
 
-当前后端默认使用 `MySQL`，优先读取以下环境变量：
+项目提供雀魂规则自动化审计脚本：
 
-```bash
-set MYSQL_HOST=127.0.0.1
-set MYSQL_PORT=3306
-set MYSQL_USER=root
-set MYSQL_PASSWORD=你的密码
-set MYSQL_DATABASE=mahjong
+```powershell
+cd D:\py\Mahjong
+D:\py\.venv\Scripts\python.exe tests\mahjong_soul_rule_audit.py
 ```
 
-也可以在项目根目录创建 `.env`，后端启动时会自动读取。
+审计报告输出到：
 
-如果你更习惯一次性传完整连接串，也可以直接设置：
-
-```bash
-set DATABASE_URL=mysql+pymysql://root:password@127.0.0.1:3306/mahjong?charset=utf8mb4
+```text
+output\mahjong_soul_rule_audit.json
 ```
 
-首次启动时，后端会自动创建 `mahjong` 数据库和表结构。
+## 版本
 
-如果你想把旧的 `mahjong.db` 历史对局迁到 MySQL：
+- `v1.0`：当前完整可运行版本，包含浏览器牌桌、MySQL 存储、三麻/四麻、规则档位、牌谱回看、行动提示和规则审计。
 
-```bash
-python migrate_sqlite_to_mysql.py
-```
+## 注意事项
 
-## 说明
-
-- 牌面未使用雀魂资源，前端采用 React 组件绘制的文本牌面以避免版权风险。
-- AI 难度按文档要求实现到 `L1 / L2 / L3`：
-  - `L1`：优先进张，偏随机
-  - `L2`：向听数 + ukeire + 基础防守
-  - `L3`：更强的攻守权衡、立直压力和副露节奏
-- 回放基于动作快照，可用于本地复盘。
-- 启动：D:\py\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir D:\py\Mahjong
+- `.env`、数据库文件、运行日志、缓存和 `node_modules` 已通过 `.gitignore` 排除。
+- 如果 MySQL 无法启动，请优先检查 `MySQL80` 服务状态和数据目录权限。
+- 当前 AI 仍是可解释的规则型 AI，并非神经网络模型。后续可以继续往 EV 分解、对手模型和多巡前瞻方向升级。

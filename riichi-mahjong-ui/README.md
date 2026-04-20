@@ -1,20 +1,49 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 单人立直麻将前端
 
-# Run and deploy your AI Studio app
+这是项目的 React 前端，负责浏览器牌桌、开局面板、历史对局、牌谱回看、行动提示、结算面板和可视化牌面展示。
 
-This contains everything you need to run your app locally.
+## 技术栈
 
-View your app in AI Studio: https://ai.studio/apps/64f09982-c866-4395-a2b4-6381fea51bf1
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- `react-riichi-mahjong-tiles`
 
-## Run Locally
+## 本地开发
 
-**Prerequisites:**  Node.js
+```powershell
+cd D:\py\Mahjong\riichi-mahjong-ui
+npm.cmd install
+npm.cmd run dev
+```
 
+开发服务默认通过 Vite 代理访问后端 `/api`，因此请同时启动 FastAPI 后端：
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```powershell
+cd D:\py\Mahjong
+D:\py\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --app-dir D:\py\Mahjong
+```
+
+## 构建
+
+```powershell
+cd D:\py\Mahjong\riichi-mahjong-ui
+npm.cmd run build
+```
+
+构建产物会输出到：
+
+```text
+riichi-mahjong-ui\dist
+```
+
+后端会优先托管这份 `dist` 产物作为正式页面。
+
+## 校验
+
+```powershell
+npm.cmd run lint
+```
+
+当前 `lint` 使用 TypeScript 类型检查。
