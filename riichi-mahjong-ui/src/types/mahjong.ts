@@ -54,6 +54,39 @@ export interface HintDiscard {
   score: number;
   waits: string[];
   routes?: string[];
+  speed_ev?: number;
+  value_ev?: number;
+  defense_ev?: number;
+  table_ev?: number;
+  lookahead_ev?: number;
+  safety_ev?: number;
+  safety_score?: number;
+  safety_label?: string;
+  defense_mode?: boolean;
+  strategy_label?: string;
+  placement?: number;
+  shape_ev?: number;
+  shape_label?: string;
+  wait_quality?: number;
+  hand_value_ev?: number;
+  estimated_han?: number;
+  estimated_value?: number;
+  value_label?: string;
+  value_routes?: string[];
+  dora_count?: number;
+  push_fold_ev?: number;
+  push_fold_label?: string;
+  push_fold_mode?: string;
+  pressure_score?: number;
+  commitment_score?: number;
+  final_ev?: number;
+  risk_sources?: Array<{
+    seat: number;
+    name: string;
+    risk: number;
+    routes: string[];
+    estimated_loss: number;
+  }>;
 }
 
 export interface HintView {

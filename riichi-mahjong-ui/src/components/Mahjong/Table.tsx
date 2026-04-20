@@ -1,5 +1,8 @@
 ﻿import React, { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
+import { AnimatePresence, motion } from 'framer-motion';
+import { BarChart3, Clapperboard, History, Lightbulb, Radar, ScrollText, Settings2, UserRound, X } from 'lucide-react';
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -1472,28 +1475,28 @@ function TableMeldStrip({
   }
 
   const placement: Record<SeatPosition, string> = {
-    bottom: 'bottom-[102px] right-[88px] max-w-[320px]',
-    right: 'right-[92px] bottom-[132px] w-[156px]',
-    top: 'right-[132px] top-[92px] w-[228px]',
-    left: 'left-[92px] bottom-[132px] w-[156px]',
+    bottom: 'bottom-[92px] right-[350px] max-w-[360px]',
+    right: 'right-[88px] top-[calc(50%+168px)] w-[300px]',
+    top: 'right-[286px] top-[88px] max-w-[320px]',
+    left: 'left-[88px] top-[calc(50%+168px)] w-[300px]',
   };
 
   const layoutClass: Record<SeatPosition, string> = {
     bottom: 'flex flex-wrap justify-end gap-2',
-    right: 'flex flex-col items-end gap-2',
+    right: 'flex flex-col-reverse items-end gap-3',
     top: 'flex flex-wrap justify-end gap-2',
-    left: 'flex flex-col items-start gap-2',
+    left: 'flex flex-col-reverse items-start gap-3',
   };
 
   const meldOrientationClass: Record<SeatPosition, string> = {
     bottom: '',
-    right: '-rotate-90 origin-center',
+    right: '',
     top: 'rotate-180 origin-center',
-    left: 'rotate-90 origin-center',
+    left: '',
   };
 
   return (
-    <div className={`pointer-events-none absolute ${placement[position]} z-30`}>
+    <div className={`pointer-events-none absolute ${placement[position]} z-40`}>
       <div className={layoutClass[position]}>
         {melds.map((meld, index) => {
           const slots = buildTableMeldSlots(meld, playerSeat, playerCount);
@@ -1505,7 +1508,7 @@ function TableMeldStrip({
           return (
             <div
               key={`${position}-${meld.type}-${index}`}
-              className={`relative flex min-h-[52px] items-end gap-1 rounded-2xl border border-white/10 bg-black/32 px-2 py-1.5 shadow-lg backdrop-blur-sm ${meldOrientationClass[position]}`}
+              className={`relative flex min-h-[52px] items-end gap-1 rounded-2xl border border-white/10 bg-black/32 px-2 py-1.5 shadow-[0_14px_26px_rgba(0,0,0,0.24)] backdrop-blur-sm ${meldOrientationClass[position]}`}
             >
               {slots.map((slot, tileIndex) => (
                 <TableMeldTile key={`${position}-${meld.type}-${index}-${tileIndex}`} slot={slot} />
@@ -1676,6 +1679,23 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
           const discardTile = parseTileLabel(item.tile);
           const priorityText = index === 0 ? '首选' : index === 1 ? '次选' : `备选 ${index + 1}`;
           const routeList = item.routes ?? [];
+          const riskSources = item.risk_sources ?? [];
+          const safetyScore = typeof item.safety_score === 'number' ? Math.round(item.safety_score * 100) : null;
+          const waitQuality = typeof item.wait_quality === 'number' ? Math.round(item.wait_quality * 100) : null;
+          const pressureScore = typeof item.pressure_score === 'number' ? Math.round(item.pressure_score * 100) : null;
+          const commitmentScore = typeof item.commitment_score === 'number' ? Math.round(item.commitment_score * 100) : null;
+          const valueRoutes = item.value_routes ?? [];
+          const evBreakdown = [
+            { label: '速度', value: item.speed_ev },
+            { label: '打点', value: item.value_ev },
+            { label: '防守', value: item.defense_ev },
+            { label: '局况', value: item.table_ev },
+            { label: '前瞻', value: item.lookahead_ev },
+            { label: '安全', value: item.safety_ev },
+            { label: '形状', value: item.shape_ev },
+            { label: '预打点', value: item.hand_value_ev },
+            { label: '押退', value: item.push_fold_ev },
+          ].filter((entry): entry is { label: string; value: number } => typeof entry.value === 'number');
 
           return (
             <div
@@ -1694,6 +1714,87 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
                 <span className={cn('mahjong-hint-risk-pill', tone.risk)}>{getHintRiskLabel(item.risk)}</span>
               </div>
 
+              {item.safety_label ? (
+                <div
+                  className={cn(
+                    'mt-3 flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-xs',
+                    item.defense_mode
+                      ? 'border-cyan-200/22 bg-cyan-950/24 text-cyan-50/82'
+                      : 'border-white/10 bg-white/[0.04] text-white/58',
+                  )}
+                >
+                  <span className="font-semibold">{item.defense_mode ? '防守模式' : '安全判断'}</span>
+                  <span className="truncate text-right">
+                    {item.safety_label}
+                    {safetyScore !== null ? ` · ${safetyScore}` : ''}
+                  </span>
+                </div>
+              ) : null}
+
+              {item.strategy_label ? (
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-amber-200/14 bg-amber-950/16 px-3 py-2 text-xs text-amber-50/72">
+                  <span className="font-semibold">局况目标</span>
+                  <span className="truncate text-right">
+                    {item.strategy_label}
+                    {typeof item.placement === 'number' ? ` · 第 ${item.placement} 位` : ''}
+                  </span>
+                </div>
+              ) : null}
+
+              {item.push_fold_label ? (
+                <div
+                  className={cn(
+                    'mt-2 rounded-2xl border px-3 py-2 text-xs',
+                    item.push_fold_mode === 'fold'
+                      ? 'border-sky-200/18 bg-sky-950/18 text-sky-50/76'
+                      : item.push_fold_mode === 'balanced'
+                        ? 'border-lime-200/14 bg-lime-950/14 text-lime-50/72'
+                        : 'border-rose-200/14 bg-rose-950/14 text-rose-50/74',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">押退判断</span>
+                    <span className="truncate text-right">{item.push_fold_label}</span>
+                  </div>
+                  {pressureScore !== null || commitmentScore !== null ? (
+                    <div className="mt-1 truncate text-[11px] opacity-70">
+                      {pressureScore !== null ? `威胁 ${pressureScore}` : ''}
+                      {pressureScore !== null && commitmentScore !== null ? ' · ' : ''}
+                      {commitmentScore !== null ? `胜负度 ${commitmentScore}` : ''}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {item.shape_label ? (
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-emerald-200/14 bg-emerald-950/16 px-3 py-2 text-xs text-emerald-50/72">
+                  <span className="font-semibold">牌型质量</span>
+                  <span className="truncate text-right">
+                    {item.shape_label}
+                    {waitQuality !== null ? ` · ${waitQuality}` : ''}
+                  </span>
+                </div>
+              ) : null}
+
+              {item.value_label ? (
+                <div className="mt-2 rounded-2xl border border-orange-200/14 bg-orange-950/16 px-3 py-2 text-xs text-orange-50/72">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">预计打点</span>
+                    <span className="truncate text-right">
+                      {item.value_label}
+                      {typeof item.estimated_han === 'number' ? ` · ${formatHintValue(item.estimated_han)}番` : ''}
+                      {typeof item.estimated_value === 'number' ? ` · ${item.estimated_value}` : ''}
+                    </span>
+                  </div>
+                  {valueRoutes.length || typeof item.dora_count === 'number' ? (
+                    <div className="mt-1 truncate text-[11px] text-orange-50/48">
+                      {valueRoutes.length ? valueRoutes.join(' / ') : '基础路线'}
+                      {typeof item.dora_count === 'number' ? ` · 宝牌 ${item.dora_count}` : ''}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="mt-4 grid grid-cols-3 gap-2">
                 <div className="mahjong-hint-metric">
                   <span className="text-white/45">进张</span>
@@ -1708,6 +1809,43 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
                   <strong>{formatHintValue(item.score)}</strong>
                 </div>
               </div>
+
+              {evBreakdown.length ? (
+                <div className="mt-4">
+                  <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">EV 拆分</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {evBreakdown.map((entry) => (
+                      <div key={`${item.tile}-ev-${entry.label}`} className="mahjong-hint-ev-chip">
+                        <span>{entry.label}</span>
+                        <strong>{formatHintValue(entry.value)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {riskSources.length ? (
+                <div className="mt-4">
+                  <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">危险来源</div>
+                  <div className="mt-2 space-y-2">
+                    {riskSources.map((source) => (
+                      <div
+                        key={`${item.tile}-risk-${source.seat}`}
+                        className="rounded-2xl border border-rose-200/12 bg-rose-950/20 px-3 py-2 text-xs text-rose-50/78"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate font-semibold">{source.name}</span>
+                          <span className="font-mono text-rose-100">{formatHintValue(source.risk)}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-rose-50/48">
+                          <span className="truncate">{source.routes.join(' / ')}</span>
+                          <span>预估 {source.estimated_loss}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               {routeList.length ? (
                 <div className="mt-4">
@@ -1744,6 +1882,174 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
   );
 }
 
+type DockPanelKey = 'setup' | 'stats' | 'history' | 'status' | 'intel' | 'log' | 'replay' | 'hint';
+
+type DockItemConfig = {
+  key: DockPanelKey;
+  label: string;
+  ariaLabel: string;
+  icon: React.ReactNode;
+  badge?: string | number;
+  disabled?: boolean;
+};
+
+const DOCK_PANEL_KEYS: DockPanelKey[] = ['setup', 'stats', 'history', 'status', 'intel', 'log', 'replay', 'hint'];
+
+const DOCK_PANEL_META: Record<DockPanelKey, { title: string; subtitle: string }> = {
+  setup: { title: '开局设置', subtitle: '新对局、规则、电脑强度与动画节奏。' },
+  stats: { title: '玩家统计', subtitle: '查看当前玩家的战绩概览。' },
+  history: { title: '历史对局', subtitle: '载入、回看或删除本地存档。' },
+  status: { title: '你的状态', subtitle: '当前手顺、副露、牌河和操作状态。' },
+  intel: { title: '牌桌情报', subtitle: '观察其他玩家的点数、副露、牌河和 AI 判断。' },
+  log: { title: '对局记录', subtitle: '最近摸牌、打牌、鸣牌和结算事件。' },
+  replay: { title: '牌谱回看', subtitle: '沿时间轴查看完整对局。' },
+  hint: { title: '行动提示', subtitle: 'AI 推荐打法、风险、进张和押退判断。' },
+};
+
+function getDockPanelFromHash(): DockPanelKey | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const key = window.location.hash.replace(/^#dock-/, '') as DockPanelKey;
+  return DOCK_PANEL_KEYS.includes(key) ? key : null;
+}
+
+function updateDockRoute(key: DockPanelKey | null) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const nextUrl = `${window.location.pathname}${window.location.search}${key ? `#dock-${key}` : ''}`;
+  window.history.pushState(null, '', nextUrl);
+}
+
+function getDockScale(index: number, hoveredIndex: number | null, active: boolean) {
+  if (hoveredIndex === null) {
+    return active ? 1.12 : 1;
+  }
+  const distance = Math.abs(index - hoveredIndex);
+  if (distance === 0) return 1.46;
+  if (distance === 1) return 1.24;
+  if (distance === 2) return 1.1;
+  return active ? 1.08 : 1;
+}
+
+function DockPanelShell({
+  activeKey,
+  children,
+  onClose,
+}: {
+  activeKey: DockPanelKey;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  const meta = DOCK_PANEL_META[activeKey];
+
+  return (
+    <motion.div
+      key={activeKey}
+      initial={{ opacity: 0, y: 22, scale: 0.96, filter: 'blur(10px)' }}
+      animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+      exit={{ opacity: 0, y: 18, scale: 0.97, filter: 'blur(8px)' }}
+      transition={{ type: 'spring', stiffness: 360, damping: 34, mass: 0.9 }}
+      className="fixed inset-x-0 bottom-[108px] z-40 flex justify-center px-3"
+      role="dialog"
+      aria-label={meta.title}
+    >
+      <div className="relative w-[min(calc(100vw-1.5rem),1080px)] overflow-hidden rounded-[32px] border border-white/14 bg-[linear-gradient(180deg,rgba(18,31,35,0.88),rgba(5,9,13,0.86))] text-white shadow-[0_26px_90px_rgba(0,0,0,0.46),0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur-2xl">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(125,255,214,0.18),transparent_32%),radial-gradient(circle_at_82%_12%,rgba(255,211,105,0.12),transparent_30%),linear-gradient(180deg,rgba(255,255,255,0.08),transparent_32%)]" />
+        <div className="relative flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div className="min-w-0">
+            <div className="text-[11px] font-black tracking-[0.22em] text-cyan-100/58">牌桌 Dock 面板</div>
+            <h2 className="mt-1 text-xl font-black tracking-[0.08em] text-white">{meta.title}</h2>
+            <p className="mt-1 text-xs leading-5 text-white/58">{meta.subtitle}</p>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭面板"
+            className="rounded-full border border-white/12 bg-white/8 p-2 text-white/70 transition hover:bg-white/14 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+        <div className="relative max-h-[min(70vh,680px)] overflow-y-auto px-5 py-5">{children}</div>
+      </div>
+    </motion.div>
+  );
+}
+
+function MacDock({
+  items,
+  activeKey,
+  onSelect,
+}: {
+  items: DockItemConfig[];
+  activeKey: DockPanelKey | null;
+  onSelect: (key: DockPanelKey) => void;
+}) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  return (
+    <motion.nav
+      initial={{ opacity: 0, y: 24 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+      className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-3"
+      aria-label="牌桌底部 Dock 导航"
+      onMouseLeave={() => setHoveredIndex(null)}
+    >
+      <div className="inline-flex items-end gap-2 rounded-[28px] border border-white/16 bg-[linear-gradient(180deg,rgba(255,255,255,0.18),rgba(255,255,255,0.08)),rgba(7,14,18,0.68)] px-3 py-2.5 shadow-[0_18px_58px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.16)] backdrop-blur-2xl">
+        {items.map((item, index) => {
+          const active = activeKey === item.key;
+          const scale = getDockScale(index, hoveredIndex, active);
+
+          return (
+            <motion.button
+              key={item.key}
+              type="button"
+              aria-label={item.ariaLabel}
+              aria-current={active ? 'page' : undefined}
+              disabled={item.disabled}
+              className={cn(
+                'group relative flex h-12 w-12 items-center justify-center rounded-2xl border text-white shadow-[0_10px_24px_rgba(0,0,0,0.24)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-200 sm:h-14 sm:w-14',
+                active
+                  ? 'border-cyan-200/55 bg-[radial-gradient(circle_at_30%_18%,rgba(255,255,255,0.26),transparent_34%),linear-gradient(180deg,rgba(58,217,255,0.35),rgba(15,65,76,0.66))] text-cyan-50'
+                  : 'border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0.05))] text-white/72 hover:text-white',
+                item.disabled ? 'cursor-not-allowed opacity-45' : ''
+              )}
+              style={{ transformOrigin: '50% 100%' }}
+              animate={{ scale, y: hoveredIndex === index ? -12 : active ? -5 : 0 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 24, mass: 0.55 }}
+              whileTap={{ scale: scale * 0.92 }}
+              onMouseEnter={() => setHoveredIndex(index)}
+              onFocus={() => setHoveredIndex(index)}
+              onBlur={() => setHoveredIndex(null)}
+              onClick={() => onSelect(item.key)}
+            >
+              <span className="pointer-events-none absolute inset-0 rounded-2xl bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.26),transparent_42%)] opacity-70" />
+              <span className="relative z-10">{item.icon}</span>
+              {item.badge !== undefined ? (
+                <span className="absolute -right-1 -top-1 rounded-full border border-black/30 bg-amber-300 px-1.5 py-0.5 text-[10px] font-black leading-none text-slate-950 shadow-[0_4px_12px_rgba(0,0,0,0.26)]">
+                  {item.badge}
+                </span>
+              ) : null}
+              <span className="pointer-events-none absolute -top-9 whitespace-nowrap rounded-full border border-white/12 bg-slate-950/84 px-2.5 py-1 text-[11px] font-semibold text-white/88 opacity-0 shadow-lg backdrop-blur-xl transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                {item.label}
+              </span>
+              {active ? (
+                <motion.span
+                  layoutId="dock-active-dot"
+                  className="absolute -bottom-1.5 h-1.5 w-1.5 rounded-full bg-cyan-100 shadow-[0_0_14px_rgba(165,243,252,0.8)]"
+                />
+              ) : null}
+            </motion.button>
+          );
+        })}
+      </div>
+    </motion.nav>
+  );
+}
+
 export const Table: React.FC = () => {
   const [playerName, setPlayerName] = useState('访客');
   const [mode, setMode] = useState<GameMode>('4P');
@@ -1764,6 +2070,7 @@ export const Table: React.FC = () => {
   const [resultModalOpen, setResultModalOpen] = useState(false);
   const [lastResultEventKey, setLastResultEventKey] = useState<string | null>(null);
   const [aiMoveDelay, setAiMoveDelay] = useState(2000);
+  const [activeDockPanel, setActiveDockPanel] = useState<DockPanelKey | null>(() => getDockPanelFromHash());
   const playbackTokenRef = useRef(0);
 
   const activeView = replay ? (replay.snapshots[replayIndex]?.state ?? null) : currentGame;
@@ -2042,6 +2349,36 @@ export const Table: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const syncDockRoute = () => {
+      setActiveDockPanel(getDockPanelFromHash());
+    };
+    window.addEventListener('hashchange', syncDockRoute);
+    window.addEventListener('popstate', syncDockRoute);
+    return () => {
+      window.removeEventListener('hashchange', syncDockRoute);
+      window.removeEventListener('popstate', syncDockRoute);
+    };
+  }, []);
+
+  const handleDockSelect = useCallback(
+    (key: DockPanelKey) => {
+      const nextKey = activeDockPanel === key ? null : key;
+      startTransition(() => {
+        setActiveDockPanel(nextKey);
+      });
+      updateDockRoute(nextKey);
+    },
+    [activeDockPanel]
+  );
+
+  const handleCloseDockPanel = useCallback(() => {
+    startTransition(() => {
+      setActiveDockPanel(null);
+    });
+    updateDockRoute(null);
+  }, []);
+
   const setLoadingState = (text: string | null, pending: boolean) => {
     setBusyText(text);
     setUiPending(pending);
@@ -2253,12 +2590,516 @@ export const Table: React.FC = () => {
     [activeView, discardActionMap, replay, uiPending]
   );
 
+  const dockItems: DockItemConfig[] = [
+    {
+      key: 'setup',
+      label: '开局',
+      ariaLabel: '打开开局设置面板',
+      icon: <Settings2 className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+    },
+    {
+      key: 'stats',
+      label: '统计',
+      ariaLabel: '打开玩家统计面板',
+      icon: <BarChart3 className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+      badge: stats?.games_played || undefined,
+    },
+    {
+      key: 'history',
+      label: '历史',
+      ariaLabel: '打开历史对局面板',
+      icon: <History className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+      badge: deferredSavedGames.length || undefined,
+    },
+    {
+      key: 'status',
+      label: '状态',
+      ariaLabel: '打开你的状态面板',
+      icon: <UserRound className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+    },
+    {
+      key: 'intel',
+      label: '情报',
+      ariaLabel: '打开牌桌情报面板',
+      icon: <Radar className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+    },
+    {
+      key: 'log',
+      label: '记录',
+      ariaLabel: '打开对局记录面板',
+      icon: <ScrollText className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+      badge: deferredLogTail.length || undefined,
+    },
+    {
+      key: 'replay',
+      label: '回放',
+      ariaLabel: '打开牌谱回看面板',
+      icon: <Clapperboard className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+      badge: replay ? replayTotalSteps : undefined,
+    },
+    {
+      key: 'hint',
+      label: '提示',
+      ariaLabel: '打开行动提示面板',
+      icon: <Lightbulb className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
+      badge: activeView?.hint?.top_discards?.length || undefined,
+    },
+  ];
+
+  const dockPanelContent = activeDockPanel
+    ? (() => {
+        switch (activeDockPanel) {
+          case 'setup':
+            return (
+              <form className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]" onSubmit={handleCreateGame}>
+                <div className="space-y-3">
+                  <label className="block text-sm">
+                    <div className="mb-1 text-white/75">玩家名</div>
+                    <input
+                      className="mahjong-console-input"
+                      maxLength={32}
+                      value={playerName}
+                      onChange={(event) => setPlayerName(event.target.value)}
+                      placeholder="访客"
+                    />
+                  </label>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm">
+                      <div className="mb-1 text-white/75">模式</div>
+                      <select className="mahjong-console-input" value={mode} onChange={(event) => handleModeChange(event.target.value as GameMode)}>
+                        <option value="4P">四麻</option>
+                        <option value="3P">三麻</option>
+                      </select>
+                    </label>
+                    <label className="block text-sm">
+                      <div className="mb-1 text-white/75">场次</div>
+                      <select className="mahjong-console-input" value={roundLength} onChange={(event) => setRoundLength(event.target.value as RoundLength)}>
+                        <option value="EAST">东风场</option>
+                        <option value="HANCHAN">半庄战</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <label className="block text-sm">
+                    <div className="mb-1 text-white/75">规则档位</div>
+                    <select className="mahjong-console-input" value={ruleProfile} onChange={(event) => handleRuleProfileChange(event.target.value as RuleProfile)}>
+                      <option value="RANKED">{RULE_PROFILE_TEXT.RANKED}</option>
+                      <option value="FRIEND">{RULE_PROFILE_TEXT.FRIEND}</option>
+                      <option value="KOYAKU">{RULE_PROFILE_TEXT.KOYAKU}</option>
+                    </select>
+                  </label>
+
+                  {mode === '3P' ? (
+                    <label className="block text-sm">
+                      <div className="mb-1 text-white/75">三麻结算方式</div>
+                      <select
+                        className="mahjong-console-input"
+                        value={sanmaScoringMode}
+                        disabled={ruleProfile === 'RANKED'}
+                        onChange={(event) => setSanmaScoringMode(event.target.value as SanmaScoringMode)}
+                      >
+                        <option value="TSUMO_LOSS">{SANMA_SCORING_TEXT.TSUMO_LOSS}</option>
+                        <option value="NORTH_BISECTION">{SANMA_SCORING_TEXT.NORTH_BISECTION}</option>
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+
+                <div className="space-y-3">
+                  <div className="mahjong-console-section p-3 text-sm text-white">
+                    <div className="mb-2 text-white/75">规则预设</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        disabled={ruleProfile !== 'FRIEND'}
+                        className={cn(
+                          'rounded-2xl border px-3 py-2 text-sm font-semibold transition',
+                          !enableKoyaku
+                            ? 'border-cyan-300/80 bg-cyan-300/20 text-cyan-100'
+                            : 'border-white/10 bg-black/20 text-white/75 hover:border-white/20 hover:text-white',
+                          ruleProfile !== 'FRIEND' ? 'cursor-not-allowed opacity-60 hover:border-white/10 hover:text-white/75' : ''
+                        )}
+                        onClick={() => setEnableKoyaku(false)}
+                      >
+                        雀魂在线规则
+                      </button>
+                      <button
+                        type="button"
+                        disabled={ruleProfile !== 'FRIEND'}
+                        className={cn(
+                          'rounded-2xl border px-3 py-2 text-sm font-semibold transition',
+                          enableKoyaku
+                            ? 'border-amber-300/80 bg-amber-300/20 text-amber-100'
+                            : 'border-white/10 bg-black/20 text-white/75 hover:border-white/20 hover:text-white',
+                          ruleProfile !== 'FRIEND' ? 'cursor-not-allowed opacity-60 hover:border-white/10 hover:text-white/75' : ''
+                        )}
+                        onClick={() => setEnableKoyaku(true)}
+                      >
+                        开启古役
+                      </button>
+                    </div>
+                    <div className="mt-2 text-xs leading-5 text-white/55">默认按雀魂在线常规规则结算；友人场可手动开启古役。</div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {Array.from({ length: aiCount }, (_, index) => (
+                      <label key={index} className="block text-sm">
+                        <div className="mb-1 text-white/75">电脑 {index + 1} 强度</div>
+                        <select
+                          className="mahjong-console-input"
+                          value={selectedAiLevels[index] ?? DEFAULT_AI_LEVELS[mode][index]}
+                          onChange={(event) => handleAiLevelChange(index, Number(event.target.value))}
+                        >
+                          <option value="1">{AI_LEVEL_OPTION_TEXT[1]}</option>
+                          <option value="2">{AI_LEVEL_OPTION_TEXT[2]}</option>
+                          <option value="3">{AI_LEVEL_OPTION_TEXT[3]}</option>
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+
+                  <label className="block text-sm">
+                    <div className="mb-1 text-white/75">电脑出牌节奏</div>
+                    <select className="mahjong-console-input" value={aiMoveDelay} onChange={(event) => setAiMoveDelay(Number(event.target.value))}>
+                      {AI_MOVE_DELAY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button type="submit" className="mahjong-console-primary w-full px-5 py-3 text-sm font-black tracking-[0.2em] transition-all active:translate-y-1 active:shadow-none">
+                    开始新对局
+                  </button>
+                </div>
+              </form>
+            );
+
+          case 'stats':
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-end">
+                  <Button variant="outline" className="mahjong-console-ghost" onClick={() => void refreshStats()}>
+                    刷新
+                  </Button>
+                </div>
+                {stats && stats.games_played ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="mahjong-console-stat p-3">
+                      <div className="text-xs text-white/60">对局数</div>
+                      <div className="mt-1 text-2xl font-black">{stats.games_played}</div>
+                    </div>
+                    <div className="mahjong-console-stat p-3">
+                      <div className="text-xs text-white/60">一位次数</div>
+                      <div className="mt-1 text-2xl font-black">{stats.wins}</div>
+                    </div>
+                    <div className="mahjong-console-stat p-3">
+                      <div className="text-xs text-white/60">平均顺位</div>
+                      <div className="mt-1 text-2xl font-black">{stats.avg_placement ?? '-'}</div>
+                    </div>
+                    <div className="mahjong-console-stat p-3">
+                      <div className="text-xs text-white/60">最高分</div>
+                      <div className="mt-1 text-2xl font-black">{stats.best_score ?? '-'}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mahjong-console-empty px-4 py-6 text-sm text-white/60">暂无数据</div>
+                )}
+              </div>
+            );
+
+          case 'history':
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-end">
+                  <Button variant="outline" className="mahjong-console-ghost" onClick={() => void refreshSavedGames()}>
+                    刷新
+                  </Button>
+                </div>
+                <div className="grid max-h-[520px] gap-3 overflow-auto pr-1 md:grid-cols-2">
+                  {deferredSavedGames.length ? (
+                    deferredSavedGames.map((item) => (
+                      <div key={item.game_id} className="mahjong-console-stat p-3">
+                        <div className="font-semibold">{getDisplayName(item.player_name)}</div>
+                        <div className="mt-1 text-xs text-white/65">
+                          {MODE_TEXT[item.mode]} · {ROUND_LENGTH_TEXT[item.round_length]}
+                          {item.rule_profile ? ` · ${RULE_PROFILE_TEXT[item.rule_profile]}` : ''}
+                          {item.mode === '3P' ? ` · ${SANMA_SCORING_TEXT[item.sanma_scoring_mode ?? 'TSUMO_LOSS']}` : ''}
+                          {' · '}
+                          {formatRoundLabel(item.round_label)}
+                        </div>
+                        <div className="mt-1 text-xs text-white/55">{item.points.map((point) => formatPoints(point)).join(' / ')}</div>
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <span className="text-xs text-white/55">{getStatusText(item.status)}</span>
+                          <div className="flex items-center gap-2">
+                            <Button size="sm" variant="outline" className="mahjong-console-ghost" onClick={() => void handleLoadGame(item.game_id)}>
+                              载入
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-rose-300/20 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                              onClick={() => void handleDeleteGame(item.game_id, item.player_name)}
+                            >
+                              删除
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="mahjong-console-empty px-4 py-6 text-sm text-white/60 md:col-span-2">暂无存档。</div>
+                  )}
+                </div>
+              </div>
+            );
+
+          case 'status':
+            return (
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                <div className="mahjong-status-shell p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">当前操作</div>
+                      <div className="mt-3 text-base font-bold leading-7 text-white/92">{bottomPlayerStatusSummary}</div>
+                      <div className="mt-2 text-xs leading-6 text-white/62">{bottomPlayerStatusDetail}</div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">当前席位</div>
+                      <div className="mt-2 text-sm font-black tracking-[0.12em] text-cyan-50">
+                        {bottomPlayer ? `${WIND_TEXT[bottomPlayer.seat_wind] ?? bottomPlayer.seat_wind}家` : '-'}
+                      </div>
+                      <div className="mt-2">
+                        <span className={cn('mahjong-status-turn-pill', hasBottomPlayer && isBottomTurn ? 'mahjong-status-turn-pill--active' : '')}>
+                          {bottomPlayerTurnLabel}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                    <div className="mahjong-status-summary-chip">
+                      <span className="text-white/45">当前点数</span>
+                      <strong>{formatPoints(bottomPlayer?.points)}</strong>
+                    </div>
+                    <div className="mahjong-status-summary-chip">
+                      <span className="text-white/45">手牌张数</span>
+                      <strong>{humanHandTiles.length}</strong>
+                    </div>
+                    <div className="mahjong-status-summary-chip">
+                      <span className="text-white/45">牌河张数</span>
+                      <strong>{bottomPlayer?.discards.length ?? 0}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-4">
+                  <div className="mahjong-status-section p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-white/84">你的副露</div>
+                      <span className="text-[11px] font-semibold tracking-[0.14em] text-white/45">{bottomPlayer?.melds.length ?? 0} 组</span>
+                    </div>
+                    <MeldStrip melds={bottomPlayer?.melds ?? []} />
+                  </div>
+                  <div className="mahjong-status-section p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-white/84">你的牌河</div>
+                      <span className="text-[11px] font-semibold tracking-[0.14em] text-white/45">{bottomPlayer?.discards.length ?? 0} 张</span>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-black/15 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                      <River discards={bottomPlayer ? toRiverTiles(bottomPlayer.discards) : []} orientation="bottom" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+
+          case 'intel':
+            return (
+              <div className="grid gap-3 lg:grid-cols-3">
+                {[rightPlayer, topPlayer, leftPlayer]
+                  .filter((player): player is PlayerView => player !== null)
+                  .map((player) => {
+                    const insight = parsePlayerInsight(player.last_reason);
+                    return (
+                      <div key={player.seat} className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="font-semibold">{getDisplayName(player.name)}</div>
+                            <div className="mt-1 text-xs text-white/60">
+                              {WIND_TEXT[player.seat_wind] ?? player.seat_wind}家 · {formatPoints(player.points)} 点
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline" className="border-white/15 text-white/80">
+                              {formatAiLevelLabel(player.ai_level)}
+                            </Badge>
+                            {player.dealer ? <Badge variant="outline" className="border-amber-200/30 text-amber-100">庄家</Badge> : null}
+                            {player.riichi ? <Badge variant="outline" className="border-pink-300/30 text-pink-100">立直</Badge> : null}
+                          </div>
+                        </div>
+                        <div className="mt-3 rounded-2xl border border-white/10 bg-black/15 px-3 py-3">
+                          <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">当前判断</div>
+                          <div className="mt-1 text-sm text-white/82">{insight.summary ?? '等待行动中。'}</div>
+                          {insight.detail ? <div className="mt-2 text-xs leading-5 text-white/58">{insight.detail}</div> : null}
+                        </div>
+                        <div className="mt-3 grid gap-3">
+                          <div>
+                            <div className="mb-2 text-xs font-semibold text-white/70">副露</div>
+                            <MeldStrip melds={player.melds} />
+                          </div>
+                          <div>
+                            <div className="mb-2 text-xs font-semibold text-white/70">牌河</div>
+                            <div className="rounded-2xl border border-white/10 bg-black/15 p-3">
+                              <River discards={toRiverTiles(player.discards)} orientation="bottom" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+
+          case 'log':
+            return (
+              <div className="space-y-4">
+                <div className="flex justify-end">
+                  <Button variant="outline" className="mahjong-console-ghost" disabled={!currentGame} onClick={() => void handleLoadReplay()}>
+                    载入牌谱
+                  </Button>
+                </div>
+                <div className="grid max-h-[520px] gap-3 overflow-auto pr-1 lg:grid-cols-2">
+                  {deferredLogTail.length ? (
+                    deferredLogTail.map((entry) => {
+                      const tone = getActionLogTone(entry.type);
+                      const tileLabel = entry.tile ? formatTileLabelZh(entry.tile) : '';
+                      const narrative = getActionLogNarrative(entry);
+                      return (
+                        <div key={entry.seq} className={cn('mahjong-log-entry border p-3.5 pl-5', tone.shell)}>
+                          <span aria-hidden className={cn('absolute bottom-3 left-2 top-3 w-1 rounded-full', tone.accent)} />
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] tracking-[0.18em] text-white/42">
+                                <span className="font-black text-white/52">#{String(entry.seq).padStart(3, '0')}</span>
+                                <span className="text-white/58">{getDisplayName(entry.actor)}</span>
+                              </div>
+                            </div>
+                            <span className={cn('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-black tracking-[0.16em] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]', tone.badge)}>
+                              {getActionTypeText(entry.type)}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-2.5">
+                            {tileLabel ? <span className={cn('mahjong-log-tile-chip', tone.tile)}>{tileLabel}</span> : null}
+                            <span className={cn('text-sm leading-6', tone.detail)}>{narrative}</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="mahjong-console-empty px-4 py-6 text-sm text-white/60 lg:col-span-2">对局中的摸牌、打牌和鸣牌记录会按顺序显示在这里。</div>
+                  )}
+                </div>
+              </div>
+            );
+
+          case 'replay':
+            return (
+              <div className="space-y-4">
+                <div className="flex justify-end">
+                  <Button
+                    variant="outline"
+                    className="mahjong-console-ghost"
+                    disabled={!replay}
+                    onClick={() => {
+                      startTransition(() => {
+                        setReplay(null);
+                        setReplayIndex(0);
+                      });
+                    }}
+                  >
+                    回到实时牌桌
+                  </Button>
+                </div>
+                <div className="mahjong-replay-shell p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="mahjong-replay-pill">{replay ? '牌谱回看中' : '实时牌桌'}</span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold tracking-[0.16em] text-white/58">
+                          {replayFrameRoundText}
+                        </span>
+                      </div>
+                      <div className="mt-3 text-sm font-semibold text-white/88">{replayFrameSummary}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2.5">
+                        {replayFrameTileText && replay ? <span className="mahjong-log-tile-chip border-cyan-200/20 bg-[linear-gradient(180deg,rgba(56,189,248,0.18),rgba(10,36,57,0.74))] text-cyan-50">{replayFrameTileText}</span> : null}
+                        <span className="text-xs leading-6 text-white/62">{replayFrameNarrative}</span>
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">回看进度</div>
+                      <div className="mt-1 text-2xl font-black tracking-[0.08em] text-cyan-50">{replay ? `${replayIndex + 1}/${replayTotalSteps}` : '--/--'}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="mahjong-replay-track">
+                      <div className="mahjong-replay-track-fill" style={{ width: `${replayProgressPercent}%` }} />
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(0, replayTotalSteps - 1)}
+                        value={replayIndex}
+                        disabled={!replay}
+                        onChange={(event) => setReplayIndex(Number(event.target.value))}
+                        className="mahjong-replay-range"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => setReplayIndex(0)}>
+                      回到开局
+                    </Button>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => setReplayIndex((current) => Math.max(0, current - 1))}>
+                      上一步
+                    </Button>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => setReplayIndex((current) => Math.min(replayTotalSteps - 1, current + 1))}>
+                      下一步
+                    </Button>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => setReplayIndex(Math.max(0, replayTotalSteps - 1))}>
+                      回到末手
+                    </Button>
+                  </div>
+                </div>
+
+                {replayRoundHeadline ? (
+                  <div className="mahjong-replay-result-card p-4">
+                    <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">这一局结果</div>
+                    <div className="mt-2 text-base font-bold leading-7 text-white/92">{replayRoundHeadline}</div>
+                  </div>
+                ) : null}
+              </div>
+            );
+
+          case 'hint':
+            return (
+              <div className="mahjong-console-section p-4">
+                <HintPanel hint={activeView?.hint} />
+              </div>
+            );
+        }
+      })()
+    : null;
+
   return (
     <div className="mahjong-page">
       {!activeView ? <WaterBackground /> : null}
 
-      <div className="relative z-10 flex min-h-screen flex-col gap-5 p-4 lg:p-5">
-        <aside className="order-2 grid gap-5 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.8fr)_minmax(0,1fr)]">
+      <div className="relative z-10 flex min-h-screen flex-col gap-5 p-4 pb-28 lg:p-5 lg:pb-32">
+        <aside className="hidden">
           <Card className="mahjong-console-card mahjong-console-card-hero rounded-[30px] p-5 text-white lg:p-6">
             <div className="mb-4">
               <div className="mahjong-brand-kicker">本地牌桌 · 单机对战服务</div>
@@ -2798,7 +3639,7 @@ export const Table: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+              <div className="hidden">
                 <Card className="mahjong-console-card rounded-[30px] p-5 text-white lg:p-6">
                   <div className="mb-3 flex items-center justify-between">
                     <h2 className="text-lg font-bold">你的状态</h2>
@@ -2988,7 +3829,7 @@ export const Table: React.FC = () => {
           </Card>
         </main>
 
-        <aside className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,0.95fr)]">
+        <aside className="hidden">
           <Card className="mahjong-console-card rounded-[30px] p-5 text-white lg:p-6">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-lg font-bold">对局记录</h2>
@@ -3251,6 +4092,15 @@ export const Table: React.FC = () => {
         </aside>
         </div>
       </div>
+
+      <AnimatePresence mode="wait">
+        {activeDockPanel && dockPanelContent ? (
+          <DockPanelShell activeKey={activeDockPanel} onClose={handleCloseDockPanel}>
+            {dockPanelContent}
+          </DockPanelShell>
+        ) : null}
+      </AnimatePresence>
+      <MacDock items={dockItems} activeKey={activeDockPanel} onSelect={handleDockSelect} />
 
       {resultModalOpen && !replay && currentGame ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/72 p-4 backdrop-blur-md">
