@@ -79,6 +79,11 @@ export interface HintDiscard {
   push_fold_mode?: string;
   pressure_score?: number;
   commitment_score?: number;
+  defense_override_ev?: number;
+  defense_override_mode?: string;
+  defense_override_label?: string;
+  fold_need?: number;
+  forced_defense?: boolean;
   final_ev?: number;
   risk_sources?: Array<{
     seat: number;
@@ -89,9 +94,40 @@ export interface HintDiscard {
   }>;
 }
 
+export interface HintSpecialAction {
+  id: string;
+  type: string;
+  label: string;
+  tile?: string | null;
+  current_shanten?: number | null;
+  next_shanten?: number | null;
+  routes?: string[];
+  speed_ev?: number;
+  value_ev?: number;
+  defense_ev?: number;
+  table_ev?: number;
+  post_discard_ev?: number;
+  call_commitment_ev?: number | null;
+  call_commitment_label?: string;
+  call_commitment_reason?: string;
+  call_commitment_blocker?: boolean | null;
+  final_ev?: number;
+  threshold?: number;
+  recommended: boolean;
+  best_discard_tile?: string | null;
+  strategy_label?: string;
+  reason?: string;
+  analysis_pending?: boolean;
+  yaku_label?: string;
+  yaku_confidence?: number | null;
+  has_yaku_path?: boolean | null;
+  guaranteed_yaku?: boolean | null;
+}
+
 export interface HintView {
   shanten: number | null;
   top_discards: HintDiscard[];
+  special_actions?: HintSpecialAction[];
 }
 
 export interface LegalAction {

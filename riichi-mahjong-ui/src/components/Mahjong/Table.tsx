@@ -17,7 +17,9 @@ import type {
   BackendMeld,
   BackendTile,
   GameMode,
+  HintSpecialAction,
   HintView,
+  LegalAction,
   PlayerStats,
   PlayerView,
   PublicGameView,
@@ -1036,6 +1038,117 @@ function getHintCardTone(index: number, risk: number): {
   };
 }
 
+function getSpecialActionTypeText(type: string): string {
+  const map: Record<string, string> = {
+    chi: '吃',
+    pon: '碰',
+    open_kan: '大明杠',
+    closed_kan: '暗杠',
+    added_kan: '加杠',
+    riichi: '立直',
+    tsumo: '自摸',
+    ron: '荣和',
+    pass: '过',
+    kita: '拔北',
+    abortive_draw: '流局',
+  };
+  return map[type] ?? type;
+}
+
+const HINTABLE_SPECIAL_ACTION_TYPES = new Set([
+  'chi',
+  'pon',
+  'open_kan',
+  'closed_kan',
+  'added_kan',
+  'riichi',
+  'tsumo',
+  'ron',
+  'pass',
+  'kita',
+  'abortive_draw',
+]);
+
+function isHintableSpecialActionType(type: string): boolean {
+  return HINTABLE_SPECIAL_ACTION_TYPES.has(type);
+}
+
+function buildFallbackSpecialActionHints(actions: LegalAction[] = []): HintSpecialAction[] {
+  return actions
+    .filter((action) => isHintableSpecialActionType(action.type))
+    .map((action) => ({
+      id: action.id,
+      type: action.type,
+      label: action.label,
+      tile: null,
+      routes: [getSpecialActionTypeText(action.type)],
+      recommended: action.type === 'ron' || action.type === 'tsumo',
+      reason: '已检测到当前可执行的特殊操作；如果这里没有 EV 拆分，说明本次状态刷新没有带回后端 AI 评估，下一次刷新会继续尝试显示完整分析。',
+      analysis_pending: true,
+    }));
+}
+
+function formatOptionalHintValue(value?: number | null): string {
+  return typeof value === 'number' ? formatHintValue(value) : '-';
+}
+
+function getSpecialActionDecisionText(action: HintSpecialAction): string {
+  if (action.analysis_pending) {
+    return action.type === 'ron' || action.type === 'tsumo' ? '建议和牌' : '可选操作';
+  }
+  if (action.type === 'ron' || action.type === 'tsumo') {
+    return '建议和牌';
+  }
+  if (action.type === 'pass') {
+    return action.recommended ? '建议过' : '不建议过';
+  }
+  return action.recommended ? '建议执行' : '建议跳过';
+}
+
+function getSpecialActionTone(action: HintSpecialAction): {
+  shell: string;
+  pill: string;
+  badge: string;
+} {
+  if (action.type === 'ron' || action.type === 'tsumo') {
+    return {
+      shell:
+        'border-amber-200/24 bg-[radial-gradient(circle_at_top_left,rgba(251,191,36,0.18),transparent_32%),linear-gradient(180deg,rgba(45,29,8,0.82),rgba(15,11,5,0.62))]',
+      pill: 'border-amber-200/36 bg-amber-300/16 text-amber-50',
+      badge: 'border-amber-200/30 bg-amber-300/14 text-amber-100',
+    };
+  }
+  if (action.recommended) {
+    return {
+      shell:
+        'border-emerald-200/20 bg-[radial-gradient(circle_at_top_left,rgba(52,211,153,0.16),transparent_32%),linear-gradient(180deg,rgba(8,35,24,0.82),rgba(5,16,12,0.62))]',
+      pill: 'border-emerald-200/28 bg-emerald-300/12 text-emerald-50',
+      badge: 'border-emerald-200/24 bg-emerald-300/12 text-emerald-100',
+    };
+  }
+  return {
+    shell:
+      'border-sky-200/14 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.1),transparent_32%),linear-gradient(180deg,rgba(9,20,32,0.8),rgba(6,10,17,0.62))]',
+    pill: 'border-sky-200/18 bg-sky-300/8 text-sky-50/78',
+    badge: 'border-white/12 bg-white/6 text-white/70',
+  };
+}
+
+function formatShantenTransition(action: HintSpecialAction): string {
+  const current = typeof action.current_shanten === 'number' ? action.current_shanten : null;
+  const next = typeof action.next_shanten === 'number' ? action.next_shanten : null;
+  if (current === null && next === null) {
+    return '-';
+  }
+  if (current === -1 || next === -1) {
+    return '和牌';
+  }
+  if (current !== null && next !== null) {
+    return `${current} → ${next}`;
+  }
+  return String(current ?? next);
+}
+
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     headers: {
@@ -1603,8 +1716,20 @@ function ResultHandBlock({
   );
 }
 
-function HintPanel({ hint }: { hint: HintView | null | undefined }) {
-  if (!hint) {
+function HintPanel({
+  hint,
+  legalActions = [],
+}: {
+  hint: HintView | null | undefined;
+  legalActions?: LegalAction[];
+}) {
+  const fallbackSpecialActionHints = hint ? [] : buildFallbackSpecialActionHints(legalActions);
+  const topDiscards = hint?.top_discards ?? [];
+  const specialActionHints =
+    hint?.special_actions && hint.special_actions.length ? hint.special_actions : fallbackSpecialActionHints;
+  const hasHintContent = Boolean(hint) || specialActionHints.length > 0;
+
+  if (!hasHintContent) {
     return (
       <div className="mahjong-hint-empty px-4 py-5 text-sm text-white/65">
         提示区会结合向听、进张和风险，给出更适合当前巡目的操作建议。
@@ -1612,7 +1737,8 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
     );
   }
 
-  const topPick = hint.top_discards[0] ?? null;
+  const leadSpecialAction = specialActionHints.find((item) => item.recommended) ?? specialActionHints[0] ?? null;
+  const topPick = topDiscards[0] ?? null;
   const topPickTile = topPick ? parseTileLabel(topPick.tile) : null;
   const topPickLabel = topPick ? formatTileLabelZh(topPick.tile) : '-';
   const topPickRoutes = topPick?.routes ?? [];
@@ -1622,9 +1748,9 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
       <div className="mahjong-hint-shell p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">行动总览</div>
-            <div className="mt-3 flex items-end gap-2">
-              <div className="text-3xl font-black tracking-[0.08em] text-cyan-50">{hint.shanten ?? '-'}</div>
+              <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">行动总览</div>
+              <div className="mt-3 flex items-end gap-2">
+              <div className="text-3xl font-black tracking-[0.08em] text-cyan-50">{hint?.shanten ?? '-'}</div>
               <div className="pb-1 text-sm font-semibold text-white/62">向听</div>
             </div>
           </div>
@@ -1671,10 +1797,165 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
             ) : null}
           </div>
         ) : null}
+
+        {leadSpecialAction ? (
+          <div className="mt-4 rounded-2xl border border-cyan-200/14 bg-cyan-950/18 px-3 py-3 text-xs text-cyan-50/78">
+            <div className="flex items-center justify-between gap-3">
+              <span className="font-semibold">特殊操作</span>
+              <span className="truncate text-right">
+                {getSpecialActionDecisionText(leadSpecialAction)} · {humanizeText(leadSpecialAction.label)}
+              </span>
+            </div>
+            <div className="mt-1 text-white/45">
+              EV {formatOptionalHintValue(leadSpecialAction.final_ev)}
+              {typeof leadSpecialAction.threshold === 'number'
+                ? ` / 阈值 ${formatHintValue(leadSpecialAction.threshold)}`
+                : ''}
+            </div>
+          </div>
+        ) : null}
       </div>
 
+      {specialActionHints.length ? (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3 px-1">
+            <div>
+              <div className="text-[11px] font-semibold tracking-[0.18em] text-white/45">特殊操作分析</div>
+              <div className="mt-1 text-xs text-white/52">碰、杠、吃、荣和等操作会单独比较收益和风险。</div>
+            </div>
+          </div>
+
+          {specialActionHints.map((action) => {
+            const tone = getSpecialActionTone(action);
+            const actionTile = action.tile ? parseTileLabel(action.tile) : null;
+            const routeList = action.routes ?? [];
+            const evBreakdown = [
+              { label: '速度', value: action.speed_ev },
+              { label: '打点', value: action.value_ev },
+              { label: '防守', value: action.defense_ev },
+              { label: '局况', value: action.table_ev },
+              { label: '后续', value: action.post_discard_ev },
+              { label: '承诺', value: action.call_commitment_ev ?? undefined },
+            ].filter((entry): entry is { label: string; value: number } => typeof entry.value === 'number');
+
+            return (
+              <div key={action.id} className={cn('mahjong-hint-card p-4', tone.shell)}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className={cn('mahjong-hint-rank', tone.badge)}>{getSpecialActionTypeText(action.type)}</span>
+                    {actionTile ? <MahjongTile tile={actionTile} size="sm" /> : null}
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">可选操作</div>
+                      <div className="truncate text-base font-bold text-white/92">{humanizeText(action.label)}</div>
+                    </div>
+                  </div>
+                  <span className={cn('mahjong-hint-risk-pill', tone.pill)}>{getSpecialActionDecisionText(action)}</span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="mahjong-hint-metric">
+                    <span className="text-white/45">向听</span>
+                    <strong>{formatShantenTransition(action)}</strong>
+                  </div>
+                  <div className="mahjong-hint-metric">
+                    <span className="text-white/45">EV</span>
+                    <strong>{formatOptionalHintValue(action.final_ev)}</strong>
+                  </div>
+                  <div className="mahjong-hint-metric">
+                    <span className="text-white/45">阈值</span>
+                    <strong>{formatOptionalHintValue(action.threshold)}</strong>
+                  </div>
+                </div>
+
+                {action.strategy_label || action.best_discard_tile ? (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-white/62">
+                    <span className="font-semibold">{action.strategy_label ? '局况目标' : '鸣后建议'}</span>
+                    <span className="truncate text-right">
+                      {action.strategy_label ? humanizeText(action.strategy_label) : ''}
+                      {action.strategy_label && action.best_discard_tile ? ' · ' : ''}
+                      {action.best_discard_tile ? `鸣后建议打 ${formatTileLabelZh(action.best_discard_tile)}` : ''}
+                    </span>
+                  </div>
+                ) : null}
+
+                {action.yaku_label ? (
+                  <div
+                    className={cn(
+                      'mt-3 flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-xs',
+                      action.has_yaku_path === false
+                        ? 'border-rose-200/18 bg-rose-950/20 text-rose-50/78'
+                        : action.guaranteed_yaku
+                          ? 'border-emerald-200/18 bg-emerald-950/18 text-emerald-50/78'
+                          : 'border-amber-200/16 bg-amber-950/16 text-amber-50/76'
+                    )}
+                  >
+                    <span className="font-semibold">和牌路线</span>
+                    <span className="truncate text-right">
+                      {humanizeText(action.yaku_label)}
+                      {typeof action.yaku_confidence === 'number'
+                        ? ` · 稳定度 ${Math.round(action.yaku_confidence * 100)}`
+                        : ''}
+                    </span>
+                  </div>
+                ) : null}
+
+                {action.call_commitment_label ? (
+                  <div
+                    className={cn(
+                      'mt-3 flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-xs',
+                      action.call_commitment_blocker
+                        ? 'border-rose-200/18 bg-rose-950/20 text-rose-50/78'
+                        : 'border-sky-200/16 bg-sky-950/14 text-sky-50/76'
+                    )}
+                  >
+                    <span className="font-semibold">副露承诺</span>
+                    <span className="truncate text-right">
+                      {humanizeText(action.call_commitment_label)}
+                      {action.call_commitment_reason ? ` · ${humanizeText(action.call_commitment_reason)}` : ''}
+                    </span>
+                  </div>
+                ) : null}
+
+                {action.reason ? (
+                  <div className="mt-3 rounded-2xl border border-cyan-200/12 bg-cyan-950/14 px-3 py-2 text-xs leading-5 text-cyan-50/72">
+                    {humanizeText(action.reason)}
+                  </div>
+                ) : null}
+
+                {evBreakdown.length ? (
+                  <div className="mt-4">
+                    <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">EV 拆分</div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {evBreakdown.map((entry) => (
+                        <div key={`${action.id}-ev-${entry.label}`} className="mahjong-hint-ev-chip">
+                          <span>{entry.label}</span>
+                          <strong>{formatHintValue(entry.value)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {routeList.length ? (
+                  <div className="mt-4">
+                    <div className="text-[11px] font-semibold tracking-[0.16em] text-white/45">操作路线</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {routeList.map((route) => (
+                        <span key={`${action.id}-route-${route}`} className="mahjong-hint-route">
+                          {humanizeText(route)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {hint.top_discards.map((item, index) => {
+        {topDiscards.map((item, index) => {
           const tone = getHintCardTone(index, item.risk);
           const discardTile = parseTileLabel(item.tile);
           const priorityText = index === 0 ? '首选' : index === 1 ? '次选' : `备选 ${index + 1}`;
@@ -1695,6 +1976,7 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
             { label: '形状', value: item.shape_ev },
             { label: '预打点', value: item.hand_value_ev },
             { label: '押退', value: item.push_fold_ev },
+            { label: '强防', value: item.defense_override_ev },
           ].filter((entry): entry is { label: string; value: number } => typeof entry.value === 'number');
 
           return (
@@ -1763,6 +2045,18 @@ function HintPanel({ hint }: { hint: HintView | null | undefined }) {
                       {commitmentScore !== null ? `胜负度 ${commitmentScore}` : ''}
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+
+              {item.defense_override_label ? (
+                <div className="mt-2 rounded-2xl border border-sky-200/18 bg-sky-950/20 px-3 py-2 text-xs text-sky-50/78">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">{item.forced_defense ? '强制防守' : '防守修正'}</span>
+                    <span className="truncate text-right">
+                      {item.defense_override_label}
+                      {typeof item.fold_need === 'number' ? ` · 压力差 ${formatHintValue(item.fold_need)}` : ''}
+                    </span>
+                  </div>
                 </div>
               ) : null}
 
@@ -2146,17 +2440,50 @@ export const Table: React.FC = () => {
 
   const discardActionMap = useMemo(() => {
     const map = new Map<number, string>();
+    const handTileById = new Map<number, BackendTile>((activeView?.human_hand ?? []).map((tile) => [tile.id, tile]));
+    const actionByTileLabel = new Map<string, string>();
+
     for (const action of activeView?.legal_actions ?? []) {
       if (action.type === 'discard' && typeof action.tile_id === 'number') {
         map.set(action.tile_id, action.id);
+        const actionTile = handTileById.get(action.tile_id);
+        if (actionTile && !actionByTileLabel.has(actionTile.label)) {
+          actionByTileLabel.set(actionTile.label, action.id);
+        }
       }
     }
+
+    for (const tile of activeView?.human_hand ?? []) {
+      const actionId = actionByTileLabel.get(tile.label);
+      if (actionId && !map.has(tile.id)) {
+        map.set(tile.id, actionId);
+      }
+    }
+
     return map;
   }, [activeView]);
 
   const specialActions = useMemo(() => {
-    return (activeView?.legal_actions ?? []).filter((action) => action.type !== 'discard');
+    const unique = new Map<string, NonNullable<PublicGameView['legal_actions']>[number]>();
+    for (const action of activeView?.legal_actions ?? []) {
+      if (action.type === 'discard') {
+        continue;
+      }
+      const key =
+        action.type === 'riichi'
+          ? `${action.type}:${formatTileLabelZh(action.label)}`
+          : `${action.type}:${action.tile_id ?? action.label}:${action.id}`;
+      if (!unique.has(key)) {
+        unique.set(key, action);
+      }
+    }
+    return Array.from(unique.values());
   }, [activeView]);
+  const hintBadgeCount =
+    (activeView?.hint?.top_discards?.length ?? 0) +
+      (activeView?.hint?.special_actions?.length ?? 0) ||
+    specialActions.filter((action) => isHintableSpecialActionType(action.type)).length ||
+    undefined;
 
   const doraTiles = useMemo(() => {
     return (activeView?.dora_indicators ?? [])
@@ -2642,7 +2969,7 @@ export const Table: React.FC = () => {
       label: '提示',
       ariaLabel: '打开行动提示面板',
       icon: <Lightbulb className="h-5 w-5 sm:h-6 sm:w-6" aria-hidden />,
-      badge: activeView?.hint?.top_discards?.length || undefined,
+      badge: hintBadgeCount,
     },
   ];
 
@@ -3087,7 +3414,7 @@ export const Table: React.FC = () => {
           case 'hint':
             return (
               <div className="mahjong-console-section p-4">
-                <HintPanel hint={activeView?.hint} />
+                <HintPanel hint={activeView?.hint} legalActions={activeView?.legal_actions} />
               </div>
             );
         }
@@ -4086,7 +4413,7 @@ export const Table: React.FC = () => {
               <div className="text-xs text-white/55">已移出牌桌，避免遮挡视线</div>
             </div>
             <div className="mahjong-console-section p-4">
-              <HintPanel hint={activeView?.hint} />
+              <HintPanel hint={activeView?.hint} legalActions={activeView?.legal_actions} />
             </div>
           </Card>
         </aside>

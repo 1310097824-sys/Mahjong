@@ -2758,6 +2758,115 @@ def push_fold_profile(
     }
 
 
+def defense_override_profile(
+    game: dict[str, Any],
+    seat: int,
+    *,
+    shanten_value: int,
+    risk: float,
+    safety_score: float,
+    hand_value_ev: float,
+    estimated_han: float,
+    wait_quality: float,
+    level: int,
+    risk_context: dict[str, Any],
+    strategy: dict[str, Any],
+) -> dict[str, Any]:
+    opponents = risk_context["opponents"]
+    if level <= 1 or not opponents:
+        return {"defense_override_ev": 0.0, "defense_override_mode": "", "defense_override_label": ""}
+
+    round_state = game["round_state"]
+    progress = round_progress_ratio(round_state)
+    max_threat = max(float(item["profile"]["threat"]) for item in opponents)
+    max_loss = max(int(item["estimated_loss"]) for item in opponents)
+    riichi_count = sum(1 for item in opponents if item["profile"].get("riichi"))
+    open_monster_count = sum(
+        1
+        for item in opponents
+        if item["profile"].get("open_meld_count", 0) >= 3 or int(item["estimated_loss"]) >= 8000
+    )
+
+    pressure = (
+        max_threat
+        + min(0.95, max_loss / 17000)
+        + min(0.72, risk / 4.2)
+        + progress * 0.46
+        + riichi_count * 0.24
+        + open_monster_count * 0.16
+        + strategy["defense_bias"] * 0.72
+    )
+    commitment = 0.0
+    if shanten_value <= 0:
+        commitment += 1.08
+    elif shanten_value == 1:
+        commitment += 0.62
+    elif shanten_value == 2:
+        commitment += 0.22
+    else:
+        commitment -= 0.12
+    commitment += min(0.74, hand_value_ev / 54.0)
+    commitment += min(0.32, max(0.0, estimated_han - 2.0) * 0.09)
+    commitment += wait_quality * (0.28 if shanten_value <= 1 else 0.08)
+    commitment += strategy["attack_bias"] * 0.42 + strategy["value_bias"] * 0.26
+    commitment -= strategy["defense_bias"] * 0.44
+    if strategy["is_all_last"] and strategy["placement"] == 1:
+        commitment -= 0.34
+    if strategy["placement"] == strategy["placement_count"] and shanten_value <= 1:
+        commitment += 0.22
+
+    fold_need = pressure - commitment
+    if fold_need < (0.5 if level >= 3 else 0.72):
+        return {
+            "defense_override_ev": 0.0,
+            "defense_override_mode": "",
+            "defense_override_label": "",
+            "fold_need": round(fold_need, 3),
+        }
+
+    ev = 0.0
+    mode = "soft_fold"
+    label = "谨慎押退"
+    if shanten_value >= 2:
+        mode = "hard_fold"
+        label = "强制弃和"
+        ev += 18.0 + fold_need * 18.0
+    elif shanten_value == 1 and estimated_han < 3 and wait_quality < 0.62:
+        mode = "hard_fold"
+        label = "一向听撤退"
+        ev += 10.0 + fold_need * 14.0
+    elif shanten_value <= 0 and estimated_han >= 4 and wait_quality >= 0.62:
+        # Good tenpai hands may still push, but unsafe tiles are punished below.
+        mode = "push_guard"
+        label = "听牌谨慎押"
+        ev += fold_need * 4.0
+    else:
+        ev += fold_need * 9.0
+
+    if safety_score >= 0.92:
+        ev += 32.0 + min(18.0, pressure * 6.0)
+    elif safety_score >= 0.78:
+        ev += 22.0 + min(12.0, pressure * 4.0)
+    elif safety_score >= 0.58 and risk <= 0.55:
+        ev += 10.0
+    elif safety_score <= 0.2 or risk >= 1.45:
+        ev -= 34.0 + min(24.0, pressure * 7.0)
+
+    if riichi_count and shanten_value >= 1 and safety_score >= 0.78:
+        ev += 12.0
+    if max_loss >= 12000 and safety_score <= 0.35:
+        ev -= 18.0
+    if level == 2:
+        ev *= 0.72
+
+    return {
+        "defense_override_ev": round(max(-82.0, min(104.0, ev)), 3),
+        "defense_override_mode": mode,
+        "defense_override_label": label,
+        "fold_need": round(fold_need, 3),
+    }
+
+
 def tile_value_bonus(game: dict[str, Any], seat: int, discard_tile_id: int) -> float:
     round_state = game["round_state"]
     bonus = 0.0
@@ -3329,6 +3438,11 @@ def discard_profile(
             "push_fold_mode": "fold",
             "pressure_score": 0.0,
             "commitment_score": 0.0,
+            "defense_override_ev": 0.0,
+            "defense_override_mode": "",
+            "defense_override_label": "",
+            "fold_need": 0.0,
+            "forced_defense": False,
             "final_ev": -1998.0,
             "score": -1998.0,
         }
@@ -3401,9 +3515,32 @@ def discard_profile(
         risk_context=risk_context,
         strategy=strategy,
     )
+    defense_override = defense_override_profile(
+        game,
+        seat,
+        shanten_value=shanten_value,
+        risk=risk,
+        safety_score=defense_profile["safety_score"],
+        hand_value_ev=hand_value_ev,
+        estimated_han=value_profile["estimated_han"],
+        wait_quality=shape_profile["wait_quality"],
+        level=level,
+        risk_context=risk_context,
+        strategy=strategy,
+    )
     push_fold_ev = round(push_fold["push_fold_ev"] * (0.42 + policy["strategy_scale"] * 0.58), 3)
+    defense_override_ev = round(
+        defense_override["defense_override_ev"] * (0.52 + policy["defense_scale"] * 0.48),
+        3,
+    )
     final_ev = round(
-        ev["final_ev"] + lookahead_ev + safety_ev + shape_profile["shape_ev"] + hand_value_ev + push_fold_ev,
+        ev["final_ev"]
+        + lookahead_ev
+        + safety_ev
+        + shape_profile["shape_ev"]
+        + hand_value_ev
+        + push_fold_ev
+        + defense_override_ev,
         3,
     )
     return {
@@ -3442,6 +3579,11 @@ def discard_profile(
         "push_fold_mode": push_fold["push_fold_mode"],
         "pressure_score": push_fold["pressure_score"],
         "commitment_score": push_fold["commitment_score"],
+        "defense_override_ev": defense_override_ev,
+        "defense_override_mode": defense_override["defense_override_mode"],
+        "defense_override_label": defense_override["defense_override_label"],
+        "fold_need": defense_override.get("fold_need", 0.0),
+        "forced_defense": False,
         "final_ev": final_ev,
         "score": final_ev,
     }
@@ -3471,10 +3613,66 @@ def sorted_discard_profiles(game: dict[str, Any], seat: int, level: int) -> list
     return sorted(profiles, key=lambda item: (-item["score"], item["tile_label"]))
 
 
+def forced_defense_profile_choice(
+    game: dict[str, Any], seat: int, profiles: list[dict[str, Any]], level: int
+) -> dict[str, Any] | None:
+    if level <= 1 or not profiles:
+        return None
+    max_pressure = max(float(profile.get("pressure_score", 0.0)) for profile in profiles)
+    if max_pressure < (1.05 if level >= 3 else 1.28):
+        return None
+
+    ordered = sorted(profiles, key=lambda item: (-item["score"], item["tile_label"]))
+    attack_pick = ordered[0]
+    attack_commitment = float(attack_pick.get("commitment_score", 0.0))
+    attack_shanten = int(attack_pick.get("shanten", 8))
+    attack_han = float(attack_pick.get("estimated_han", 0.0))
+    attack_wait_quality = float(attack_pick.get("wait_quality", 0.0))
+
+    should_fold = False
+    if attack_shanten >= 2 and max_pressure >= (1.05 if level >= 3 else 1.28):
+        should_fold = True
+    elif attack_shanten == 1 and max_pressure >= 1.28 and attack_commitment < 0.95:
+        should_fold = True
+    elif attack_shanten <= 0 and max_pressure >= 1.55 and (attack_han < 3 or attack_wait_quality < 0.48):
+        should_fold = True
+
+    if not should_fold:
+        return None
+
+    safe_pool = [
+        profile
+        for profile in profiles
+        if float(profile.get("safety_score", 0.0)) >= 0.78
+        or (float(profile.get("risk", 99.0)) <= 0.45 and float(profile.get("safety_score", 0.0)) >= 0.56)
+    ]
+    if not safe_pool:
+        return None
+
+    selected = max(
+        safe_pool,
+        key=lambda item: (
+            float(item.get("safety_score", 0.0)),
+            -float(item.get("risk", 99.0)),
+            float(item.get("defense_override_ev", 0.0)),
+            float(item.get("score", -9999.0)),
+        ),
+    )
+    if selected["tile_id"] == attack_pick["tile_id"]:
+        return None
+    selected["forced_defense"] = True
+    selected["push_fold_label"] = "强制弃和" if attack_shanten >= 2 else "强制押退"
+    selected["push_fold_mode"] = "fold"
+    return selected
+
+
 def choose_profile_with_ai_policy(game: dict[str, Any], seat: int, profiles: list[dict[str, Any]], level: int) -> dict[str, Any]:
     if not profiles:
         raise ValueError("No profiles to choose from")
     ordered = sorted(profiles, key=lambda item: (-item["score"], item["tile_label"]))
+    defensive_choice = forced_defense_profile_choice(game, seat, profiles, level)
+    if defensive_choice is not None:
+        return defensive_choice
     policy = ai_level_policy(level)
     mistake_pool = max(1, min(int(policy["mistake_pool"]), len(ordered)))
     if mistake_pool > 1 and ai_roll(game, seat, "discard_mistake") < float(policy["mistake_rate"]):
@@ -3554,6 +3752,215 @@ def call_route_profile(game: dict[str, Any], seat: int, action: ActionChoice, co
     return round(bonus, 3), unique_routes[:4]
 
 
+def prospective_open_call_melds(game: dict[str, Any], seat: int, action: ActionChoice) -> list[dict[str, Any]]:
+    round_state = game["round_state"]
+    melds = deepcopy(round_state["melds"][seat])
+    if action.type not in {"chi", "pon", "open_kan"} or action.tile_id is None:
+        return melds
+    discarder = round_state["last_discard"]["seat"] if round_state.get("last_discard") is not None else None
+    melds.append(
+        {
+            "type": action.type,
+            "tiles": sort_tiles(list(action.consumed_ids) + [action.tile_id]),
+            "opened": True,
+            "called_tile": action.tile_id,
+            "from_seat": discarder,
+        }
+    )
+    return melds
+
+
+def confirm_open_call_tenpai_yaku(
+    game: dict[str, Any],
+    seat: int,
+    action: ActionChoice,
+    concealed_after_call: list[int],
+) -> dict[str, Any]:
+    melds = prospective_open_call_melds(game, seat, action)
+    wait_types = winning_tile_types_for_layout(game, seat, concealed_after_call, melds)
+    confirmed_yaku: list[str] = []
+    best_han = 0
+    best_points = 0
+    confirmed_waits: list[str] = []
+    for wait_type in sorted(wait_types):
+        win_tile_id = wait_type * 4
+        result = estimate_hand_value_for_layout(
+            game,
+            seat,
+            concealed_after_call,
+            melds,
+            win_tile_id,
+            is_tsumo=False,
+            riichi_override=False,
+            ippatsu_override=False,
+        )
+        if result.error:
+            continue
+        yaku_names = serialize_yaku_names(result.yaku)
+        confirmed_yaku.extend(name.split(" ", 1)[0] for name in yaku_names)
+        best_han = max(best_han, int(result.han or 0))
+        best_points = max(best_points, score_result_total(dict(result.cost)))
+        confirmed_waits.append(tile_type_label(wait_type))
+
+    return {
+        "is_tenpai": bool(wait_types),
+        "confirmed": bool(confirmed_waits),
+        "waits": confirmed_waits,
+        "yaku": unique_ordered_labels(confirmed_yaku)[:4],
+        "best_han": best_han,
+        "best_points": best_points,
+    }
+
+
+def open_call_yaku_viability_profile(
+    game: dict[str, Any],
+    seat: int,
+    action: ActionChoice,
+    concealed_after_call: list[int],
+    routes: list[str],
+    next_shanten: int,
+    level: int,
+) -> dict[str, Any]:
+    round_state = game["round_state"]
+    called_tile = action.tile_id or 0
+    called_type = tile_type(called_tile)
+    visible_call_tiles = list(action.consumed_ids) + [called_tile]
+    existing_melds = [meld for meld in round_state["melds"][seat] if meld["type"] != "kita"]
+    all_types = [tile_type(tile_id) for tile_id in concealed_after_call + visible_call_tiles]
+    for meld in existing_melds:
+        all_types.extend(tile_type(tile_id) for tile_id in meld["tiles"])
+
+    counts = to_34_array(concealed_after_call)
+    own_wind_type = round_state["wind_type_map"][seat_wind_label(round_state, seat)]
+    round_wind_type = round_state["wind_type_map"][round_state["prevalent_wind"]]
+    value_honor_types = {own_wind_type, round_wind_type, 31, 32, 33}
+
+    guaranteed_routes: list[str] = []
+    candidate_routes: list[str] = []
+    confidence = 0.0
+
+    existing_value_meld = any(
+        meld["type"] in TRIPLET_MELD_TYPES and tile_type(meld["tiles"][0]) in value_honor_types
+        for meld in existing_melds
+    )
+    called_value_triplet = action.type in {"pon", "open_kan"} and called_type in value_honor_types
+    if existing_value_meld or called_value_triplet:
+        guaranteed_routes.append("役牌")
+        confidence = max(confidence, 1.0)
+
+    if all_types and all(is_simple(ttype) for ttype in all_types):
+        candidate_routes.append("断幺")
+        confidence = max(confidence, 0.86)
+
+    suited_types = [ttype for ttype in all_types if ttype < 27]
+    honor_count = sum(1 for ttype in all_types if is_honor(ttype))
+    if suited_types:
+        suit_counts = [sum(1 for ttype in suited_types if tile_suit_index(ttype) == suit) for suit in range(3)]
+        dominant_suit = max(range(3), key=lambda suit: suit_counts[suit])
+        off_suit_count = len(suited_types) - suit_counts[dominant_suit]
+        if off_suit_count == 0:
+            if honor_count:
+                candidate_routes.append("混一色")
+                confidence = max(confidence, 0.76)
+            else:
+                candidate_routes.append("清一色")
+                confidence = max(confidence, 0.82)
+
+    triplet_like = sum(1 for meld in existing_melds if meld["type"] in TRIPLET_MELD_TYPES)
+    triplet_like += 1 if action.type in {"pon", "open_kan"} else 0
+    triplet_like += sum(1 for amount in counts if amount >= 3)
+    pair_count = sum(1 for amount in counts if amount >= 2)
+    if action.type in {"pon", "open_kan"} and triplet_like >= 2 and pair_count >= 1:
+        candidate_routes.append("对对和")
+        confidence = max(confidence, 0.82 if triplet_like >= 3 else 0.66)
+
+    value_honor_pairs = sum(1 for ttype in value_honor_types if counts[ttype] >= 2)
+    if value_honor_pairs and "役牌" not in guaranteed_routes:
+        candidate_routes.append("役牌候补")
+        confidence = max(confidence, 0.58 if next_shanten <= 1 else 0.48)
+
+    all_yaku_routes = unique_ordered_labels(guaranteed_routes + candidate_routes)
+    has_yaku_path = bool(all_yaku_routes)
+    guaranteed_yaku = bool(guaranteed_routes)
+    weak_candidate_only = has_yaku_path and not guaranteed_yaku and confidence < 0.62
+    route_set = set(routes)
+    dora_only = bool(route_set) and route_set <= {"宝牌"}
+
+    if next_shanten == 0:
+        confirmation = confirm_open_call_tenpai_yaku(game, seat, action, concealed_after_call)
+        if confirmation["confirmed"]:
+            confirmed_routes = confirmation["yaku"] or all_yaku_routes or ["有役听牌"]
+            label = f"有役听牌：{'/'.join(confirmed_routes)}"
+            return {
+                "has_yaku_path": True,
+                "guaranteed_yaku": True,
+                "yaku_confidence": 1.0,
+                "yaku_ev": 14.0 + min(8.0, len(confirmation["waits"]) * 1.6),
+                "threshold_adjust": -7.0,
+                "routes": confirmed_routes,
+                "yaku_label": label,
+                "yaku_reason": f"鸣后听牌已通过计分器验证可和，等待 {', '.join(confirmation['waits'][:5])}。",
+            }
+        if confirmation["is_tenpai"]:
+            penalty = 54.0 if level >= 3 else 42.0 if level == 2 else 32.0
+            return {
+                "has_yaku_path": False,
+                "guaranteed_yaku": False,
+                "yaku_confidence": 0.0,
+                "yaku_ev": -penalty,
+                "threshold_adjust": 38.0,
+                "routes": [],
+                "yaku_label": "听牌但无役",
+                "yaku_reason": "鸣后虽然听牌，但用当前副露和所有待牌验证后没有可和役；宝牌不能替代役，建议跳过。",
+            }
+
+    if not has_yaku_path:
+        penalty = 44.0 if level >= 3 else 36.0 if level == 2 else 28.0
+        threshold_adjust = 30.0 if level >= 3 else 22.0 if level == 2 else 16.0
+        label = "鸣后无稳定役"
+        reason = "鸣牌会破坏门清，当前看不到断幺、役牌、染手、对对和等稳定役；宝牌本身不能作为和牌役。"
+        if dora_only:
+            reason += " 这类牌即使有宝牌，也容易变成副露无役。"
+        return {
+            "has_yaku_path": False,
+            "guaranteed_yaku": False,
+            "yaku_confidence": 0.0,
+            "yaku_ev": -penalty,
+            "threshold_adjust": threshold_adjust,
+            "routes": [],
+            "yaku_label": label,
+            "yaku_reason": reason,
+        }
+
+    if weak_candidate_only:
+        penalty = 13.0 if level >= 3 else 9.0
+        label = f"役路偏弱：{'/'.join(all_yaku_routes)}"
+        return {
+            "has_yaku_path": True,
+            "guaranteed_yaku": False,
+            "yaku_confidence": round(confidence, 3),
+            "yaku_ev": -penalty,
+            "threshold_adjust": 11.0,
+            "routes": all_yaku_routes,
+            "yaku_label": label,
+            "yaku_reason": "鸣后只有候补役路线，尚未形成稳定役；除非明显推进向听或局况必须追分，否则更倾向跳过。",
+        }
+
+    bonus = 11.0 if guaranteed_yaku else 5.5 + confidence * 5.0
+    threshold_adjust = -5.0 if guaranteed_yaku else -1.5
+    label = f"可和路线：{'/'.join(all_yaku_routes)}"
+    return {
+        "has_yaku_path": True,
+        "guaranteed_yaku": guaranteed_yaku,
+        "yaku_confidence": round(confidence, 3),
+        "yaku_ev": round(bonus, 3),
+        "threshold_adjust": threshold_adjust,
+        "routes": all_yaku_routes,
+        "yaku_label": label,
+        "yaku_reason": "鸣后仍保留可和役路线，AI 会继续结合速度、打点和放铳风险决定是否执行。",
+    }
+
+
 def best_post_call_discard_profile(
     game: dict[str, Any],
     seat: int,
@@ -3577,6 +3984,149 @@ def best_post_call_discard_profile(
         for tile_id in candidates
     ]
     return max(profiles, key=lambda profile: profile["final_ev"])
+
+
+def open_call_commitment_profile(
+    game: dict[str, Any],
+    seat: int,
+    action: ActionChoice,
+    *,
+    current_shanten: int,
+    next_shanten: int,
+    shanten_gain: int,
+    yaku_profile: dict[str, Any],
+    best_discard: dict[str, Any] | None,
+    max_threat: float,
+    max_loss: int,
+    progress: float,
+    strategy: dict[str, Any],
+    level: int,
+) -> dict[str, Any]:
+    if action.type not in {"chi", "pon", "open_kan"}:
+        return {
+            "call_commitment_ev": 0.0,
+            "call_commitment_label": "",
+            "call_commitment_blocker": False,
+            "call_commitment_reason": "",
+            "threshold_adjust": 0.0,
+        }
+
+    policy = ai_level_policy(level)
+    has_yaku_path = bool(yaku_profile.get("has_yaku_path", False))
+    guaranteed_yaku = bool(yaku_profile.get("guaranteed_yaku", False))
+    yaku_confidence = float(yaku_profile.get("yaku_confidence") or 0.0)
+    post_ukeire = float(best_discard.get("ukeire", 0.0)) if isinstance(best_discard, dict) else 0.0
+    post_risk = float(best_discard.get("risk", 0.0)) if isinstance(best_discard, dict) else 0.0
+    post_safety = float(best_discard.get("safety_score", 0.0)) if isinstance(best_discard, dict) else 0.0
+    post_forced_defense = bool(best_discard.get("forced_defense", False)) if isinstance(best_discard, dict) else False
+    strategy_scale = float(policy["strategy_scale"])
+
+    ev = 0.0
+    threshold_adjust = 0.0
+    blocker = False
+    reasons: list[str] = []
+
+    if shanten_gain >= 2:
+        ev += 18.0
+        threshold_adjust -= 4.0
+        reasons.append("\u8fde\u8df3\u5411\u542c")
+    elif shanten_gain == 1:
+        ev += 8.0 + max(0.0, 2.0 - next_shanten) * 3.0
+        threshold_adjust -= 2.0
+        reasons.append("\u6539\u5584\u5411\u542c")
+    else:
+        penalty = 13.0 if level >= 3 else 8.0
+        ev -= penalty + progress * 6.0
+        threshold_adjust += 6.0 if level >= 3 else 3.0
+        reasons.append("\u4e0d\u6539\u5584\u5411\u542c")
+
+    if guaranteed_yaku:
+        ev += 8.0 + yaku_confidence * 5.0
+        threshold_adjust -= 3.0
+        reasons.append("\u5df2\u6709\u7a33\u5b9a\u5f79")
+    elif has_yaku_path:
+        ev += yaku_confidence * 7.0 - 2.5
+        if yaku_confidence < 0.62:
+            ev -= 7.0
+            threshold_adjust += 5.0
+            reasons.append("\u5f79\u8def\u4e0d\u7a33")
+    else:
+        ev -= 36.0 if level >= 3 else 24.0
+        threshold_adjust += 26.0 if level >= 3 else 16.0
+        blocker = True
+        reasons.append("\u9e23\u540e\u65e0\u5f79")
+
+    far_open = next_shanten >= 3 or (next_shanten >= 2 and shanten_gain <= 0)
+    if far_open and not guaranteed_yaku:
+        ev -= 16.0 + progress * 10.0
+        threshold_adjust += 10.0
+        reasons.append("\u8fdc\u624b\u526f\u9732")
+        if level >= 3 and max_threat >= 0.85:
+            blocker = True
+
+    if post_ukeire:
+        if next_shanten <= 1 and post_ukeire >= 10:
+            ev += min(12.0, post_ukeire * 0.45)
+            reasons.append("\u9e23\u540e\u8fdb\u5f20\u597d")
+        elif post_ukeire <= 4 and next_shanten >= 1:
+            ev -= 9.0
+            threshold_adjust += 4.0
+            reasons.append("\u9e23\u540e\u8fdb\u5f20\u5c11")
+
+    if post_forced_defense:
+        ev -= 16.0
+        threshold_adjust += 8.0
+        reasons.append("\u9e23\u540e\u8981\u64a4\u9000")
+    elif post_risk >= 1.25 and post_safety < 0.45:
+        ev -= 18.0 + min(12.0, max_threat * 5.0)
+        threshold_adjust += 8.0
+        reasons.append("\u9e23\u540e\u9996\u6253\u5371\u9669")
+    elif post_safety >= 0.78 and max_threat >= 0.9:
+        ev += 7.0
+        reasons.append("\u6709\u5b89\u5168\u51fa\u53e3")
+
+    if max_threat >= 1.1 and next_shanten >= 1:
+        danger_tax = 8.0 + min(14.0, max_loss / 1800) * (0.35 + progress * 0.65)
+        ev -= danger_tax
+        threshold_adjust += 5.0
+        reasons.append("\u573a\u4e0a\u538b\u529b\u9ad8")
+    if action.type == "open_kan":
+        kan_tax = 10.0 + max_threat * 8.0 + progress * 4.0
+        ev -= kan_tax
+        threshold_adjust += 7.0
+        reasons.append("\u660e\u6760\u7ed9\u65b0\u5b9d\u724c")
+
+    if strategy["call_bias"] > 0 and shanten_gain >= 1:
+        ev += strategy["call_bias"] * 8.0 * strategy_scale
+        threshold_adjust -= strategy["call_bias"] * 3.5 * strategy_scale
+    if strategy["defense_bias"] > 0 and next_shanten >= 1:
+        ev -= strategy["defense_bias"] * 10.0 * strategy_scale
+        threshold_adjust += strategy["defense_bias"] * 5.0 * strategy_scale
+
+    if level >= 3:
+        if next_shanten >= 3 and shanten_gain <= 0:
+            blocker = True
+        if max_threat >= 1.25 and post_risk >= 1.15 and next_shanten > 0:
+            blocker = True
+        if has_yaku_path and not guaranteed_yaku and yaku_confidence < 0.5 and next_shanten >= 2:
+            blocker = True
+
+    if blocker:
+        label = "\u4e0d\u5efa\u8bae\u9e23"
+    elif ev >= 12.0:
+        label = "\u53ef\u4ee5\u9e23\u724c"
+    elif ev >= 0.0:
+        label = "\u8fb9\u754c\u9e23\u724c"
+    else:
+        label = "\u503e\u5411\u8df3\u8fc7"
+
+    return {
+        "call_commitment_ev": round(max(-88.0, min(64.0, ev)), 3),
+        "call_commitment_label": label,
+        "call_commitment_blocker": blocker,
+        "call_commitment_reason": "\u3001".join(unique_ordered_labels(reasons)[:4]),
+        "threshold_adjust": round(threshold_adjust, 3),
+    }
 
 
 def can_riichi_after_discard(game: dict[str, Any], seat: int, discard_tile_id: int) -> bool:
@@ -3618,6 +4168,7 @@ def build_discard_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]
     forbidden_types = set(round_state["kuikae_forbidden_types"][seat])
     actions: list[ActionChoice] = []
     seen: set[tuple[int, bool]] = set()
+    riichi_seen_labels: set[str] = set()
     for tile_id in sort_tiles(round_state["hands"][seat]):
         key = (tile_type(tile_id), is_red(tile_id))
         if key in seen:
@@ -3626,7 +4177,9 @@ def build_discard_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]
         if tile_type(tile_id) in forbidden_types:
             continue
         actions.append(ActionChoice(f"discard|{tile_id}", "discard", seat, f"打出 {tile_label(tile_id)}", tile_id=tile_id))
-        if can_riichi_after_discard(game, seat, tile_id):
+        riichi_label_key = tile_label(tile_id)
+        if riichi_label_key not in riichi_seen_labels and can_riichi_after_discard(game, seat, tile_id):
+            riichi_seen_labels.add(riichi_label_key)
             actions.append(ActionChoice(f"riichi|{tile_id}", "riichi", seat, f"立直并打出 {tile_label(tile_id)}", tile_id=tile_id))
     return actions
 
@@ -3826,19 +4379,356 @@ def build_player_summary(game: dict[str, Any], seat: int, reveal: bool) -> dict[
     }
 
 
+def hint_shanten_value(game: dict[str, Any], seat: int) -> int | None:
+    try:
+        return shanten_calculator.calculate_shanten(to_34_array(game["round_state"]["hands"][seat]))
+    except ValueError:
+        return None
+
+
+def turn_special_action_profile(game: dict[str, Any], seat: int, action: ActionChoice, level: int) -> dict[str, Any]:
+    round_state = game["round_state"]
+    current_shanten = shanten_of_tiles(round_state["hands"][seat])
+    strategy = placement_strategy_context(game, seat)
+    progress = round_progress_ratio(round_state)
+    pressure = opponent_models(game, seat)
+    max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_loss = max((model["estimated_loss"] for model in pressure), default=0)
+
+    if action.type == "tsumo":
+        return {
+            "action": action,
+            "current_shanten": -1,
+            "next_shanten": -1,
+            "routes": ["自摸和牌"],
+            "speed_ev": 999.0,
+            "value_ev": 999.0,
+            "defense_ev": 0.0,
+            "table_ev": 0.0,
+            "post_discard_ev": 0.0,
+            "final_ev": 1998.0,
+            "threshold": 0.0,
+            "recommended": True,
+            "best_discard": None,
+            "strategy_label": strategy["label"],
+            "reason": "已经满足自摸和牌条件，标准立直麻将下应直接和牌。",
+        }
+
+    if action.type == "abortive_draw":
+        speed_ev = 18.0 if current_shanten >= 5 else 6.0
+        value_ev = 0.0
+        defense_ev = 18.0 + max_threat * 6.0
+        table_ev = 3.0 if strategy["placement"] == 1 else 0.0
+        final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
+        threshold = 26.0 if current_shanten >= 5 else 36.0
+        recommended = final_ev >= threshold
+        return {
+            "action": action,
+            "current_shanten": current_shanten,
+            "next_shanten": current_shanten,
+            "routes": ["九种九牌", "保留点棒"],
+            "speed_ev": round(speed_ev, 3),
+            "value_ev": round(value_ev, 3),
+            "defense_ev": round(defense_ev, 3),
+            "table_ev": round(table_ev, 3),
+            "post_discard_ev": 0.0,
+            "final_ev": final_ev,
+            "threshold": threshold,
+            "recommended": recommended,
+            "best_discard": None,
+            "strategy_label": strategy["label"],
+            "reason": "起手幺九牌过多时可以选择九种九牌流局；牌太散或场上压力高时更建议流局。",
+        }
+
+    if action.type == "kita":
+        value_ev = 18.0
+        speed_ev = 7.5
+        defense_ev = -(max_threat * (2.0 + progress * 3.0))
+        table_ev = 3.0 + strategy["value_bias"] * 6.0
+        final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
+        threshold = 8.0 + max_threat * 2.5
+        return {
+            "action": action,
+            "current_shanten": current_shanten,
+            "next_shanten": current_shanten,
+            "routes": ["拔北宝牌", "岭上补牌"],
+            "speed_ev": round(speed_ev, 3),
+            "value_ev": round(value_ev, 3),
+            "defense_ev": round(defense_ev, 3),
+            "table_ev": round(table_ev, 3),
+            "post_discard_ev": 0.0,
+            "final_ev": final_ev,
+            "threshold": round(threshold, 3),
+            "recommended": final_ev >= threshold,
+            "best_discard": None,
+            "strategy_label": strategy["label"],
+            "reason": "三麻拔北通常能增加宝牌价值并补摸一张，除非极端防守局面，一般倾向执行。",
+        }
+
+    if action.type in {"closed_kan", "added_kan"}:
+        policy = ai_level_policy(level)
+        dora_types = {dora_from_indicator(tile, mode=game["mode"]) for tile in current_dora_indicators(round_state)}
+        tile_is_dora = action.tile_id is not None and tile_type(action.tile_id) in dora_types
+        speed_ev = 9.0 if current_shanten <= 1 else 3.0
+        value_ev = 12.0 + (5.0 if action.type == "closed_kan" else 2.0)
+        if tile_is_dora:
+            value_ev += 5.0
+        if round_state["riichi"][seat]:
+            value_ev += 2.5
+        defense_ev = -(6.0 + max_threat * (8.0 + progress * 10.0) + min(8.0, max_loss / 3900))
+        if action.type == "added_kan":
+            defense_ev -= 3.5 + max_threat * 3.0
+        if current_shanten <= 1:
+            defense_ev *= 0.72
+        table_ev = (strategy["value_bias"] * 7.0 + strategy["attack_bias"] * 4.0 - strategy["defense_bias"] * 9.0)
+        final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
+        threshold = 12.0 if action.type == "closed_kan" else 16.0
+        threshold += max_threat * 4.0 + progress * 4.0 + strategy["defense_bias"] * 6.0
+        recommended = bool(policy["closed_kan"]) and final_ev >= threshold
+        kan_name = "暗杠" if action.type == "closed_kan" else "加杠"
+        routes = [kan_name, "岭上补牌", "增加宝牌"]
+        if action.type == "added_kan":
+            routes.append("注意抢杠")
+        return {
+            "action": action,
+            "current_shanten": current_shanten,
+            "next_shanten": current_shanten,
+            "routes": routes,
+            "speed_ev": round(speed_ev, 3),
+            "value_ev": round(value_ev, 3),
+            "defense_ev": round(defense_ev, 3),
+            "table_ev": round(table_ev, 3),
+            "post_discard_ev": 0.0,
+            "final_ev": final_ev,
+            "threshold": round(threshold, 3),
+            "recommended": recommended,
+            "best_discard": None,
+            "strategy_label": strategy["label"],
+            "reason": f"{kan_name}会带来岭上补牌和新宝牌，但也会提升全场打点；对手威胁高时会更谨慎。",
+        }
+
+    return {
+        "action": action,
+        "current_shanten": current_shanten,
+        "next_shanten": current_shanten,
+        "routes": [],
+        "speed_ev": 0.0,
+        "value_ev": 0.0,
+        "defense_ev": 0.0,
+        "table_ev": 0.0,
+        "post_discard_ev": 0.0,
+        "final_ev": 0.0,
+        "threshold": 0.0,
+        "recommended": False,
+        "best_discard": None,
+        "strategy_label": strategy["label"],
+        "reason": "该操作暂时没有更细的路线收益，默认谨慎处理。",
+    }
+
+
+def pass_action_profile_for_hint(game: dict[str, Any], seat: int, action: ActionChoice, level: int) -> dict[str, Any]:
+    round_state = game["round_state"]
+    current_shanten = shanten_of_tiles(round_state["hands"][seat])
+    strategy = placement_strategy_context(game, seat)
+    progress = round_progress_ratio(round_state)
+    pressure = opponent_models(game, seat)
+    max_threat = max((model["threat"] for model in pressure), default=0.0)
+    reactions = build_reaction_actions(game, seat)
+
+    if any(choice.type == "ron" for choice in reactions):
+        return {
+            "action": action,
+            "current_shanten": current_shanten,
+            "next_shanten": current_shanten,
+            "routes": ["\u4e0d\u5efa\u8bae\u8df3\u8fc7\u548c\u724c"],
+            "speed_ev": -999.0,
+            "value_ev": -999.0,
+            "defense_ev": 0.0,
+            "table_ev": 0.0,
+            "post_discard_ev": 0.0,
+            "final_ev": -1998.0,
+            "threshold": 0.0,
+            "recommended": False,
+            "best_discard": None,
+            "strategy_label": strategy["label"],
+            "reason": "\u5df2\u7ecf\u6ee1\u8db3\u8363\u548c\u6761\u4ef6\uff0c\u6807\u51c6\u7acb\u76f4\u9ebb\u5c06\u4e0d\u5e94\u8df3\u8fc7\u53ef\u548c\u724c\u3002",
+        }
+
+    call_profiles = [
+        open_call_profile(game, seat, choice, level)
+        for choice in reactions
+        if choice.type in {"chi", "pon", "open_kan"}
+    ]
+    best_call = max(call_profiles, key=lambda profile: profile["final_ev"], default=None)
+    recommended_call = next((profile for profile in call_profiles if profile["should_call"]), None)
+
+    speed_ev = 4.0 if current_shanten <= 2 else 8.0
+    value_ev = 4.0 if current_shanten <= 1 else 7.0
+    defense_ev = 6.0 + max_threat * (5.0 + progress * 5.0)
+    table_ev = strategy["defense_bias"] * 7.0 - strategy["call_bias"] * 4.0
+    post_discard_ev = 0.0
+    routes = ["\u4fdd\u6301\u95e8\u6e05", "\u8df3\u8fc7\u9e23\u724c"]
+    reason_parts: list[str] = []
+
+    if best_call is not None:
+        gap = float(best_call["threshold"]) - float(best_call["final_ev"])
+        if gap > 0:
+            post_discard_ev += min(18.0, gap * 0.35)
+            reason_parts.append("\u9e23\u724c\u672a\u8fbe\u9608\u503c")
+        if best_call.get("has_yaku_path") is False:
+            value_ev += 10.0
+            reason_parts.append("\u9e23\u540e\u65e0\u5f79")
+        if best_call.get("call_commitment_blocker"):
+            defense_ev += 8.0
+            reason_parts.append("\u526f\u9732\u627f\u8bfa\u5ea6\u4f4e")
+        if best_call["should_call"]:
+            push_gap = float(best_call["final_ev"]) - float(best_call["threshold"])
+            speed_ev -= 12.0 + min(12.0, push_gap * 0.28)
+            value_ev -= 6.0
+            routes.append("\u6709\u66f4\u4f18\u9e23\u724c")
+            reason_parts.append("\u6709\u53ef\u6267\u884c\u7684\u9e23\u724c")
+
+    final_ev = round(speed_ev + value_ev + defense_ev + table_ev + post_discard_ev, 3)
+    recommended = recommended_call is None
+    threshold = 9.0 if recommended else 18.0
+    reason = "\u3001".join(unique_ordered_labels(reason_parts)[:4])
+    if not reason:
+        reason = "\u6ca1\u6709\u770b\u5230\u8db3\u4ee5\u6253\u7834\u95e8\u6e05\u7684\u9e23\u724c\u6536\u76ca\uff0c\u4f18\u5148\u4fdd\u6301\u624b\u724c\u5f39\u6027\u3002"
+
+    return {
+        "action": action,
+        "current_shanten": current_shanten,
+        "next_shanten": current_shanten,
+        "routes": routes,
+        "speed_ev": round(speed_ev, 3),
+        "value_ev": round(value_ev, 3),
+        "defense_ev": round(defense_ev, 3),
+        "table_ev": round(table_ev, 3),
+        "post_discard_ev": round(post_discard_ev, 3),
+        "final_ev": final_ev,
+        "threshold": threshold,
+        "recommended": recommended,
+        "best_discard": None,
+        "strategy_label": strategy["label"],
+        "reason": reason,
+    }
+
+
+def special_action_profile_for_hint(game: dict[str, Any], seat: int, action: ActionChoice, level: int) -> dict[str, Any]:
+    if action.type == "pass":
+        return pass_action_profile_for_hint(game, seat, action, level)
+
+    if action.type in {"chi", "pon", "open_kan", "ron"}:
+        profile = open_call_profile(game, seat, action, level)
+        profile["recommended"] = bool(profile.get("should_call"))
+        if action.type == "ron":
+            profile["reason"] = "已经满足荣和条件，标准立直麻将下应直接和牌。"
+        else:
+            yaku_note = profile.get("yaku_reason") or ""
+            profile["reason"] = (
+                "鸣牌会改变向听、打点、防守和鸣后第一打；这里优先检查鸣后是否仍有可和役，"
+                "再按速度 EV、打点 EV、场况 EV 与风险阈值综合判断。"
+                f" {yaku_note}"
+            ).strip()
+        return profile
+
+    if action.type == "riichi":
+        risk_context = build_tile_risk_context(game, seat)
+        discard_item = discard_profile(
+            game,
+            seat,
+            action.tile_id or 0,
+            level,
+            include_lookahead=False,
+            risk_context=risk_context,
+        )
+        profile = riichi_decision_profile(game, seat, action, discard_item, level)
+        profile["current_shanten"] = shanten_of_tiles(game["round_state"]["hands"][seat])
+        profile["next_shanten"] = discard_item["shanten"]
+        profile["routes"] = ["立直", *discard_item.get("routes", [])]
+        profile["post_discard_ev"] = discard_item.get("lookahead_ev", 0.0)
+        profile["recommended"] = bool(profile.get("should_riichi"))
+        profile["best_discard"] = discard_item
+        profile["reason"] = "立直会锁手并押出一千点，AI 会比较进张、预期打点、危险度和局况后再决定是否立直。"
+        return profile
+
+    return turn_special_action_profile(game, seat, action, level)
+
+
+def serialize_special_action_hint(profile: dict[str, Any]) -> dict[str, Any]:
+    action: ActionChoice = profile["action"]
+    best_discard = profile.get("best_discard")
+    best_discard_tile = best_discard.get("tile_label") if isinstance(best_discard, dict) else None
+    return {
+        "id": action.action_id,
+        "type": action.type,
+        "label": action.label,
+        "tile": tile_label(action.tile_id) if action.tile_id is not None else None,
+        "current_shanten": profile.get("current_shanten"),
+        "next_shanten": profile.get("next_shanten"),
+        "routes": profile.get("routes", []),
+        "speed_ev": profile.get("speed_ev", 0.0),
+        "value_ev": profile.get("value_ev", 0.0),
+        "defense_ev": profile.get("defense_ev", 0.0),
+        "table_ev": profile.get("table_ev", 0.0),
+        "post_discard_ev": profile.get("post_discard_ev", 0.0),
+        "call_commitment_ev": profile.get("call_commitment_ev"),
+        "call_commitment_label": profile.get("call_commitment_label", ""),
+        "call_commitment_reason": profile.get("call_commitment_reason", ""),
+        "call_commitment_blocker": profile.get("call_commitment_blocker"),
+        "final_ev": profile.get("final_ev", 0.0),
+        "threshold": profile.get("threshold", 0.0),
+        "recommended": bool(profile.get("recommended", False)),
+        "best_discard_tile": best_discard_tile,
+        "strategy_label": profile.get("strategy_label", ""),
+        "reason": profile.get("reason", ""),
+        "yaku_label": profile.get("yaku_label", ""),
+        "yaku_confidence": profile.get("yaku_confidence"),
+        "has_yaku_path": profile.get("has_yaku_path"),
+        "guaranteed_yaku": profile.get("guaranteed_yaku"),
+    }
+
+
+def special_action_hints(game: dict[str, Any], seat: int, level: int) -> list[dict[str, Any]]:
+    round_state = game["round_state"]
+    if round_state["phase"] == "DISCARD" and round_state["turn_seat"] == seat:
+        actions = [action for action in build_turn_actions(game, seat) if action.type != "discard"]
+    elif round_state["phase"] == "REACTION":
+        actions = build_reaction_actions(game, seat)
+        if actions:
+            actions.append(ActionChoice("pass|hint", "pass", seat, "\u8fc7"))
+    else:
+        return []
+
+    profiles = [special_action_profile_for_hint(game, seat, action, level) for action in actions]
+    return [
+        serialize_special_action_hint(profile)
+        for profile in sorted(
+            profiles,
+            key=lambda item: (
+                not bool(item.get("recommended", False)),
+                -float(item.get("final_ev", 0.0)),
+                item["action"].label,
+            ),
+        )
+    ]
+
+
 def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
     round_state = game["round_state"]
     seat = game["human_seat"]
-    if round_state["phase"] != "DISCARD" or round_state["turn_seat"] != seat:
+    level = 3
+    is_human_turn = round_state["phase"] == "DISCARD" and round_state["turn_seat"] == seat
+    is_human_reaction = round_state["phase"] == "REACTION" and bool(build_reaction_actions(game, seat))
+    if not is_human_turn and not is_human_reaction:
         return None
-    try:
-        shanten_value = shanten_calculator.calculate_shanten(to_34_array(round_state["hands"][seat]))
-    except ValueError:
-        shanten_value = None
-    profiles = sorted_discard_profiles(game, seat, 3)[:3]
+
+    shanten_value = hint_shanten_value(game, seat)
+    profiles = sorted_discard_profiles(game, seat, level)[:3] if is_human_turn else []
     risk_context = build_tile_risk_context(game, seat)
     return {
         "shanten": shanten_value,
+        "special_actions": special_action_hints(game, seat, level),
         "top_discards": [
             {
                 "tile": item["tile_label"],
@@ -3872,6 +4762,11 @@ def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
                 "push_fold_mode": item["push_fold_mode"],
                 "pressure_score": item["pressure_score"],
                 "commitment_score": item["commitment_score"],
+                "defense_override_ev": item["defense_override_ev"],
+                "defense_override_mode": item["defense_override_mode"],
+                "defense_override_label": item["defense_override_label"],
+                "fold_need": item["fold_need"],
+                "forced_defense": item["forced_defense"],
                 "final_ev": item["final_ev"],
                 "risk_sources": discard_risk_sources(game, seat, item["tile_id"], risk_context=risk_context),
             }
@@ -4175,11 +5070,18 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
         speed_ev -= 14.0
 
     route_bonus, routes = call_route_profile(game, seat, action, new_concealed)
+    yaku_profile = open_call_yaku_viability_profile(game, seat, action, new_concealed, routes, next_shanten, level)
+    routes = unique_ordered_labels(routes + yaku_profile["routes"])[:5]
     value_scale = 0.72 if level == 1 else 0.92 if level == 2 else 1.08
     value_ev = route_bonus * value_scale
+    value_ev += yaku_profile["yaku_ev"]
     value_ev += (strategy["value_bias"] * 13.0 + strategy["call_bias"] * 7.0) * strategy_scale
     if not routes:
         value_ev -= 16.0 if level >= 3 else 11.0
+    elif not yaku_profile["has_yaku_path"]:
+        value_ev -= 8.0 if level >= 3 else 5.0
+    elif not yaku_profile["guaranteed_yaku"] and next_shanten >= 2:
+        value_ev -= 5.0
     if action.type == "open_kan":
         value_ev += 4.0 if level >= 3 else -10.0
 
@@ -4194,6 +5096,21 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
     pressure = opponent_models(game, seat)
     max_threat = max((model["threat"] for model in pressure), default=0.0)
     max_loss = max((model["estimated_loss"] for model in pressure), default=0)
+    call_commitment = open_call_commitment_profile(
+        game,
+        seat,
+        action,
+        current_shanten=current_shanten,
+        next_shanten=next_shanten,
+        shanten_gain=shanten_gain,
+        yaku_profile=yaku_profile,
+        best_discard=best_discard,
+        max_threat=max_threat,
+        max_loss=max_loss,
+        progress=progress,
+        strategy=strategy,
+        level=level,
+    )
     defense_ev = -(max_threat * (8.0 + progress * 12.0))
     defense_ev -= min(12.0, max_loss / 2600) * (0.25 + progress * 0.55)
     if action.type == "open_kan":
@@ -4213,13 +5130,26 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
         table_ev += 4.5
     table_ev += (strategy["attack_bias"] * 7.0 + strategy["call_bias"] * 9.0 - strategy["defense_bias"] * 8.0) * strategy_scale
 
-    final_ev = round(speed_ev + value_ev + defense_ev + table_ev + post_discard_ev, 3)
+    final_ev = round(
+        speed_ev + value_ev + defense_ev + table_ev + post_discard_ev + call_commitment["call_commitment_ev"],
+        3,
+    )
     threshold = open_call_threshold(level, action.type, next_shanten)
+    threshold += yaku_profile["threshold_adjust"]
+    threshold += call_commitment["threshold_adjust"]
     threshold -= (strategy["call_bias"] * 9.0 + strategy["attack_bias"] * 4.5) * strategy_scale
     threshold += strategy["defense_bias"] * 9.0 * strategy_scale
     if strategy_scale >= 0.6 and strategy["is_all_last"] and strategy["placement"] == 1:
         threshold += 6.0 * strategy_scale
     should_call = final_ev >= threshold
+    if not yaku_profile["has_yaku_path"]:
+        should_call = False
+    elif not yaku_profile["guaranteed_yaku"] and shanten_gain <= 0 and action.type in {"pon", "chi", "open_kan"}:
+        should_call = False
+    elif not yaku_profile["guaranteed_yaku"] and next_shanten >= 2 and action.type in {"pon", "open_kan"}:
+        should_call = False
+    if call_commitment["call_commitment_blocker"]:
+        should_call = False
     if action.type == "open_kan" and not policy["open_kan"]:
         should_call = False
 
@@ -4233,11 +5163,20 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
         "defense_ev": round(defense_ev, 3),
         "table_ev": round(table_ev, 3),
         "post_discard_ev": round(post_discard_ev, 3),
+        "call_commitment_ev": call_commitment["call_commitment_ev"],
+        "call_commitment_label": call_commitment["call_commitment_label"],
+        "call_commitment_reason": call_commitment["call_commitment_reason"],
+        "call_commitment_blocker": call_commitment["call_commitment_blocker"],
         "final_ev": final_ev,
         "threshold": round(threshold, 3),
         "should_call": should_call,
         "best_discard": best_discard,
         "strategy_label": strategy["label"],
+        "yaku_label": yaku_profile["yaku_label"],
+        "yaku_reason": yaku_profile["yaku_reason"],
+        "yaku_confidence": yaku_profile["yaku_confidence"],
+        "has_yaku_path": yaku_profile["has_yaku_path"],
+        "guaranteed_yaku": yaku_profile["guaranteed_yaku"],
     }
 
 
@@ -4399,7 +5338,9 @@ def choose_ai_turn_action(game: dict[str, Any], seat: int) -> tuple[ActionChoice
     profile = profile_lookup[(tile_type(chosen_discard.tile_id or 0), is_red(chosen_discard.tile_id or 0))]
     route_text = "/".join(profile["routes"]) if profile["routes"] else "牌效"
     best_profile = max(action_profiles, key=lambda item: item["score"])
+    defense_note = f" | {profile['push_fold_label']}" if profile.get("forced_defense") else ""
     mistake_note = " | 难度随机" if chosen_profile["tile_id"] != best_profile["tile_id"] and level <= 2 else ""
+    mistake_note += defense_note
     reason = (
         f"L{level} 选择 {profile['tile_label']} | 向听 {profile['shanten']} | 进张 {profile['ukeire']} | "
         f"风险 {profile['risk']} | 安全 {profile['safety_label']} | 前瞻 {profile['lookahead_ev']} | "
