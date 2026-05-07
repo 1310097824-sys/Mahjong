@@ -36,7 +36,21 @@ MODE_POINTS = {"4P": settings.default_4p_points, "3P": settings.default_3p_point
 TARGET_POINTS = {"4P": 30000, "3P": 40000}
 NOTEN_PAYMENTS = {"4P": 3000, "3P": 2000}
 SANMA_SCORING_MODES = {"TSUMO_LOSS", "NORTH_BISECTION"}
+MINIMUM_HAN_OPTIONS = {1, 2, 4}
 RULE_PROFILES = {"RANKED", "FRIEND", "KOYAKU"}
+AKA_DORA_COUNTS_BY_MODE = {"4P": {0, 3, 4}, "3P": {0, 2}}
+DEFAULT_AKA_DORA_COUNTS = {"4P": 3, "3P": 2}
+AKA_DORA_IDS_BY_MODE_COUNT = {
+    "4P": {
+        0: set(),
+        3: {16, 52, 88},
+        4: {16, 52, 53, 88},
+    },
+    "3P": {
+        0: set(),
+        2: {52, 88},
+    },
+}
 ACTION_PRIORITY = {"ron": 3, "open_kan": 2, "pon": 2, "chi": 1}
 OPEN_MELD_TYPES = {"chi", "pon", "open_kan", "added_kan"}
 SANMA_REMOVED_MANZU_TYPES = set(range(1, 8))
@@ -75,6 +89,14 @@ AI_LEVEL_POLICIES = {
         "closed_kan": True,
     },
 }
+ALPHA_SEARCH_DEPTH = 2
+ALPHA_SEARCH_DRAW_BEAM = 3
+ALPHA_SEARCH_DISCARD_BEAM = 2
+ALPHA_SEARCH_DISCOUNT = 0.24
+ALPHA_SEARCH_WEIGHT = 0.22
+ALPHA_ACTION_SEARCH_DEPTH = 1
+ALPHA_ACTION_SEARCH_WEIGHT = 0.18
+ALPHA_RIICHI_SEARCH_WEIGHT = 0.2
 ABORTIVE_DRAW_HEADLINES = {
     "KYUUSHU_KYUUHAI": "九种九牌流局",
     "SUUFON_RENDA": "四风连打",
@@ -140,26 +162,50 @@ def tile_type(tile_id: int) -> int:
     return tile_id // 4
 
 
-def is_red(tile_id: int) -> bool:
-    return tile_id in {16, 52, 88}
+def default_aka_dora_count(mode: str) -> int:
+    return DEFAULT_AKA_DORA_COUNTS.get(mode, 3)
 
 
-def tile_sort_key(tile_id: int) -> tuple[int, int]:
-    return tile_type(tile_id), 0 if is_red(tile_id) else 1, tile_id
+def normalize_aka_dora_count(mode: str, profile: str, value: Any) -> int:
+    default = default_aka_dora_count(mode)
+    if profile == "RANKED":
+        return default
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return default
+    return count if count in AKA_DORA_COUNTS_BY_MODE.get(mode, {default}) else default
 
 
-def sort_tiles(tiles: list[int]) -> list[int]:
-    return sorted(tiles, key=tile_sort_key)
+def active_aka_dora_ids(game: dict[str, Any]) -> set[int]:
+    ensure_game_defaults(game)
+    mode = game.get("mode", "4P")
+    count = int(game.get("aka_dora_count", default_aka_dora_count(mode)))
+    return set(AKA_DORA_IDS_BY_MODE_COUNT.get(mode, {}).get(count, set()))
 
 
-def tile_label(tile_id: int) -> str:
+def is_red(tile_id: int, game: dict[str, Any] | None = None) -> bool:
+    if game is None:
+        return tile_id in {16, 52, 88}
+    return tile_id in active_aka_dora_ids(game)
+
+
+def tile_sort_key(tile_id: int, game: dict[str, Any] | None = None) -> tuple[int, int]:
+    return tile_type(tile_id), 0 if is_red(tile_id, game) else 1, tile_id
+
+
+def sort_tiles(tiles: list[int], game: dict[str, Any] | None = None) -> list[int]:
+    return sorted(tiles, key=lambda tile_id: tile_sort_key(tile_id, game))
+
+
+def tile_label(tile_id: int, game: dict[str, Any] | None = None) -> str:
     t = tile_type(tile_id)
     if t >= 27:
         return HONOR_LABELS[t]
     suit_index = t // 9
     rank = t % 9 + 1
     suit = "mps"[suit_index]
-    if is_red(tile_id):
+    if is_red(tile_id, game):
         return f"0{suit}"
     return f"{rank}{suit}"
 
@@ -170,6 +216,17 @@ def tile_type_label(tile_index: int) -> str:
     suit = "mps"[tile_index // 9]
     rank = tile_index % 9 + 1
     return f"{rank}{suit}"
+
+
+def representative_tile_id(tile_index: int, hand_tiles: list[int] | None = None) -> int:
+    blocked = set(hand_tiles or [])
+    candidate_ids = list(range(tile_index * 4, tile_index * 4 + 4))
+    if tile_index in {4, 13, 22}:
+        candidate_ids = candidate_ids[1:] + candidate_ids[:1]
+    for tile_id in candidate_ids:
+        if tile_id not in blocked:
+            return tile_id
+    return candidate_ids[0]
 
 
 def is_honor(tile_index: int) -> bool:
@@ -212,7 +269,9 @@ def scoring_indicator_tile_id(indicator_tile_id: int, *, mode: str) -> int:
         return indicator_tile_id
     if tile_type(indicator_tile_id) != 0:
         return indicator_tile_id
-    return 28 + (indicator_tile_id % 4)
+    # 三麻移除 2-8 万后，1 万指示牌应指向 9 万。
+    # mahjong 库按四麻顺序计算，因此传入虚拟 8 万指示牌来得到 9 万宝牌。
+    return 7 * 4 + (indicator_tile_id % 4)
 
 
 def scoring_dora_indicators(game: dict[str, Any], round_state: dict[str, Any], *, ura: bool = False) -> list[int]:
@@ -296,6 +355,18 @@ def ensure_game_defaults(game: dict[str, Any]) -> None:
     elif game["rule_profile"] == "KOYAKU":
         game["koyaku_enabled"] = True
 
+    minimum_han = game.get("minimum_han")
+    try:
+        minimum_han = int(minimum_han)
+    except (TypeError, ValueError):
+        minimum_han = 1
+    if game["rule_profile"] == "RANKED":
+        game["minimum_han"] = 1
+    else:
+        game["minimum_han"] = minimum_han if minimum_han in MINIMUM_HAN_OPTIONS else 1
+
+    game["aka_dora_count"] = normalize_aka_dora_count(mode, game["rule_profile"], game.get("aka_dora_count"))
+
     sanma_scoring_mode = game.get("sanma_scoring_mode")
     if game["mode"] == "3P":
         if game["rule_profile"] == "RANKED":
@@ -316,11 +387,21 @@ def sanma_scoring_mode(game: dict[str, Any]) -> str:
     return str(game.get("sanma_scoring_mode", "TSUMO_LOSS"))
 
 
+def minimum_han(game: dict[str, Any]) -> int:
+    ensure_game_defaults(game)
+    return int(game.get("minimum_han", 1))
+
+
+def aka_dora_count(game: dict[str, Any]) -> int:
+    ensure_game_defaults(game)
+    return int(game.get("aka_dora_count", default_aka_dora_count(game.get("mode", "4P"))))
+
+
 def build_rule_options(game: dict[str, Any]) -> OptionalRules:
     enable_koyaku = bool(game.get("koyaku_enabled", False))
     return OptionalRules(
         has_open_tanyao=True,
-        has_aka_dora=True,
+        has_aka_dora=False,
         has_double_yakuman=True,
         kazoe_limit=HandConfig.KAZOE_LIMITED,
         kiriage=False,
@@ -402,10 +483,10 @@ def round_up_to_100(value: float) -> int:
     return int(((int(value) + (0 if float(value).is_integer() else 1)) + 99) // 100 * 100)
 
 
-def copy_public_tiles(tiles: list[int], reveal: bool) -> list[dict[str, Any]]:
+def copy_public_tiles(game: dict[str, Any], tiles: list[int], reveal: bool) -> list[dict[str, Any]]:
     if not reveal:
         return [{"label": "##"} for _ in tiles]
-    return [{"id": tile, "label": tile_label(tile), "red": is_red(tile)} for tile in sort_tiles(tiles)]
+    return [{"id": tile, "label": tile_label(tile, game), "red": is_red(tile, game)} for tile in sort_tiles(tiles, game)]
 
 
 def clear_ippatsu(round_state: dict[str, Any]) -> None:
@@ -419,7 +500,6 @@ def invalidate_pending_double_riichi(round_state: dict[str, Any]) -> None:
         return
     for seat, active in enumerate(pending):
         if active:
-            round_state["double_riichi"][seat] = False
             pending[seat] = False
 
 
@@ -440,12 +520,6 @@ def is_furiten(round_state: dict[str, Any], seat: int, win_tile_type: int) -> bo
     )
 
 
-def is_kita_north_exception(round_state: dict[str, Any], discard: dict[str, Any] | None) -> bool:
-    if discard is None:
-        return False
-    return discard.get("source") == "kita" and tile_type(discard["tile"]) == 30
-
-
 def has_shape_win_on_last_discard(game: dict[str, Any], seat: int) -> bool:
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
@@ -457,10 +531,7 @@ def has_shape_win_on_last_discard(game: dict[str, Any], seat: int) -> bool:
     if is_head_bump_blocked(game, seat):
         return False
     tiles = list(round_state["hands"][seat]) + [discard["tile"]]
-    try:
-        return agari_calculator.is_agari(to_34_array(tiles))
-    except ValueError:
-        return False
+    return is_complete_hand_shape(tiles, round_state["melds"][seat], mode=game.get("mode", "4P"))
 
 
 def apply_forced_furiten_for_current_discard(game: dict[str, Any], *, exclude_seat: int | None = None) -> None:
@@ -469,7 +540,7 @@ def apply_forced_furiten_for_current_discard(game: dict[str, Any], *, exclude_se
     discard = round_state["last_discard"]
     if discard is None:
         return
-    if is_kita_north_exception(round_state, discard):
+    if discard.get("source") == "kita":
         return
     for seat in range(round_state["player_count"]):
         if seat == discard["seat"] or seat == exclude_seat:
@@ -495,8 +566,7 @@ def can_ron_on_last_discard(game: dict[str, Any], seat: int, *, ignore_passed: b
     discard_tile = discard["tile"]
     discard_type = tile_type(discard_tile)
     ron_result = evaluate_hand(game, seat, discard_tile, is_tsumo=False, kyoutaku_override=0)
-    furiten_exempt = is_kita_north_exception(round_state, discard)
-    if ron_result is None or (not furiten_exempt and is_furiten(round_state, seat, discard_type)):
+    if ron_result is None or is_furiten(round_state, seat, discard_type):
         return False, ron_result
     if discard.get("source") == "kan" and discard.get("kan_type") == "closed_kan":
         return is_kokushi_result(ron_result), ron_result
@@ -544,23 +614,119 @@ def extract_special_yakuman_han(yaku_items: list[Any]) -> tuple[dict[str, int], 
     return yakuman_keys, total_han
 
 
-def tenpai_wait_tile_types(concealed_tiles: list[int], *, mode: str = "4P") -> set[int]:
-    try:
-        if shanten_calculator.calculate_shanten(to_34_array(concealed_tiles)) != 0:
-            return set()
-    except ValueError:
-        return set()
+def layout_meld_count(melds_data: list[dict[str, Any]]) -> int:
+    return sum(1 for meld in melds_data if meld.get("type") != "kita")
 
-    grouped = counts_by_type(concealed_tiles)
+
+def tile_type_counts_34(tiles: list[int]) -> list[int]:
+    counts = [0] * 34
+    for tile_id in tiles:
+        counts[tile_type(tile_id)] += 1
+    return counts
+
+
+def can_form_standard_sets(counts: list[int], needed_sets: int) -> bool:
+    memo: dict[tuple[tuple[int, ...], int], bool] = {}
+
+    def search(state: tuple[int, ...], remaining_sets: int) -> bool:
+        key = (state, remaining_sets)
+        if key in memo:
+            return memo[key]
+        if remaining_sets == 0:
+            memo[key] = all(count == 0 for count in state)
+            return memo[key]
+
+        first = next((index for index, count in enumerate(state) if count > 0), None)
+        if first is None:
+            memo[key] = remaining_sets == 0
+            return memo[key]
+
+        if state[first] >= 3:
+            next_counts = list(state)
+            next_counts[first] -= 3
+            if search(tuple(next_counts), remaining_sets - 1):
+                memo[key] = True
+                return True
+
+        if first < 27 and first % 9 <= 6 and state[first + 1] > 0 and state[first + 2] > 0:
+            next_counts = list(state)
+            next_counts[first] -= 1
+            next_counts[first + 1] -= 1
+            next_counts[first + 2] -= 1
+            if search(tuple(next_counts), remaining_sets - 1):
+                memo[key] = True
+                return True
+
+        memo[key] = False
+        return False
+
+    return search(tuple(counts), needed_sets)
+
+
+def is_standard_complete_with_melds(concealed_tiles: list[int], melds_data: list[dict[str, Any]]) -> bool:
+    meld_count = layout_meld_count(melds_data)
+    needed_sets = 4 - meld_count
+    if needed_sets < 0:
+        return False
+    if len(concealed_tiles) != needed_sets * 3 + 2:
+        return False
+
+    counts = tile_type_counts_34(concealed_tiles)
+    for pair_index, count in enumerate(counts):
+        if count < 2:
+            continue
+        counts[pair_index] -= 2
+        if can_form_standard_sets(counts, needed_sets):
+            counts[pair_index] += 2
+            return True
+        counts[pair_index] += 2
+    return False
+
+
+def is_chiitoitsu_complete(concealed_tiles: list[int], melds_data: list[dict[str, Any]]) -> bool:
+    if layout_meld_count(melds_data) != 0 or len(concealed_tiles) != 14:
+        return False
+    counts = tile_type_counts_34(concealed_tiles)
+    return sum(1 for count in counts if count == 2) == 7
+
+
+def is_kokushi_complete(concealed_tiles: list[int], melds_data: list[dict[str, Any]], *, mode: str) -> bool:
+    if layout_meld_count(melds_data) != 0 or len(concealed_tiles) != 14:
+        return False
+    required = {0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33}
+    counts = tile_type_counts_34(concealed_tiles)
+    return all(counts[index] > 0 for index in required) and any(counts[index] >= 2 for index in required)
+
+
+def is_complete_hand_shape(concealed_tiles: list[int], melds_data: list[dict[str, Any]] | None = None, *, mode: str = "4P") -> bool:
+    melds = melds_data or []
+    return (
+        is_standard_complete_with_melds(concealed_tiles, melds)
+        or is_chiitoitsu_complete(concealed_tiles, melds)
+        or is_kokushi_complete(concealed_tiles, melds, mode=mode)
+    )
+
+
+def tenpai_wait_tile_types(
+    concealed_tiles: list[int],
+    *,
+    mode: str = "4P",
+    melds_data: list[dict[str, Any]] | None = None,
+) -> set[int]:
+    melds = melds_data or []
+    owned_counts = tile_type_counts_34(concealed_tiles)
+    for meld in melds:
+        if meld.get("type") == "kita":
+            continue
+        for tile_id in meld.get("tiles", []):
+            owned_counts[tile_type(tile_id)] += 1
+
     waits: set[int] = set()
     for tile_index in legal_tile_types_for_mode(mode):
-        if len(grouped.get(tile_index, [])) >= 4:
+        if owned_counts[tile_index] >= 4:
             continue
-        try:
-            if shanten_calculator.calculate_shanten(to_34_array(concealed_tiles + [tile_index * 4])) == -1:
-                waits.add(tile_index)
-        except ValueError:
-            continue
+        if is_complete_hand_shape(concealed_tiles + [representative_tile_id(tile_index, concealed_tiles)], melds, mode=mode):
+            waits.add(tile_index)
     return waits
 
 
@@ -568,7 +734,7 @@ def calculate_tenpai_seats(game: dict[str, Any]) -> list[int]:
     round_state = game["round_state"]
     tenpai: list[int] = []
     for seat in range(round_state["player_count"]):
-        if tenpai_wait_tile_types(round_state["hands"][seat], mode=game["mode"]):
+        if tenpai_wait_tile_types(round_state["hands"][seat], mode=game["mode"], melds_data=round_state["melds"][seat]):
             tenpai.append(seat)
     return tenpai
 
@@ -588,7 +754,7 @@ def calculate_limit_hand_cost(
         round_wind=WIND_CONSTANTS[round_state["prevalent_wind"]],
         kyoutaku_number=0,
         tsumi_number=honba,
-        options=OptionalRules(has_open_tanyao=True, has_aka_dora=True),
+        options=OptionalRules(has_open_tanyao=True, has_aka_dora=False),
     )
     return dict(ScoresCalculator.calculate_scores(han=han, fu=30, config=config, is_yakuman=han >= 13))
 
@@ -881,17 +1047,18 @@ def apply_local_yaku_replacements(
     return updated_han, updated_yaku_names
 
 
-def is_agari_layout(concealed_tiles: list[int], melds_data: list[dict[str, Any]], win_tile_id: int, *, is_tsumo: bool) -> bool:
+def is_agari_layout(
+    concealed_tiles: list[int],
+    melds_data: list[dict[str, Any]],
+    win_tile_id: int,
+    *,
+    is_tsumo: bool,
+    mode: str = "4P",
+) -> bool:
     all_tiles = list(concealed_tiles)
     if not is_tsumo:
         all_tiles.append(win_tile_id)
-    for meld in melds_data:
-        if meld["type"] != "kita":
-            all_tiles.extend(meld["tiles"])
-    try:
-        return agari_calculator.is_agari(to_34_array(all_tiles))
-    except ValueError:
-        return False
+    return is_complete_hand_shape(all_tiles, melds_data, mode=mode)
 
 
 def apply_local_mangan_floor(
@@ -923,12 +1090,7 @@ def local_bonus_tile_names(
     is_tsumo: bool,
 ) -> tuple[int, list[str]]:
     round_state = game["round_state"]
-    all_tiles = list(concealed_tiles)
-    if not is_tsumo:
-        all_tiles.append(win_tile_id)
-    for meld in melds_data:
-        if meld["type"] != "kita":
-            all_tiles.extend(meld["tiles"])
+    all_tiles = scoring_tiles_from_layout(concealed_tiles, melds_data, win_tile_id, is_tsumo=is_tsumo)
 
     bonus_han = 0
     names: list[str] = []
@@ -939,7 +1101,7 @@ def local_bonus_tile_names(
         bonus_han += dora_han
         names.append(f"Dora {dora_han} han")
 
-    aka_han = sum(1 for tile_id in all_tiles if is_red(tile_id))
+    aka_han = active_aka_dora_han(game, all_tiles)
     if aka_han:
         bonus_han += aka_han
         names.append(f"Aka Dora {aka_han} han")
@@ -959,6 +1121,26 @@ def local_bonus_tile_names(
     return bonus_han, names
 
 
+def scoring_tiles_from_layout(
+    concealed_tiles: list[int],
+    melds_data: list[dict[str, Any]],
+    win_tile_id: int,
+    *,
+    is_tsumo: bool,
+) -> list[int]:
+    all_tiles = list(concealed_tiles)
+    if not is_tsumo:
+        all_tiles.append(win_tile_id)
+    for meld in melds_data:
+        if meld["type"] != "kita":
+            all_tiles.extend(meld["tiles"])
+    return all_tiles
+
+
+def active_aka_dora_han(game: dict[str, Any], tiles: list[int]) -> int:
+    return sum(1 for tile_id in tiles if is_red(tile_id, game))
+
+
 def evaluate_local_only_hand(
     game: dict[str, Any],
     seat: int,
@@ -973,7 +1155,7 @@ def evaluate_local_only_hand(
 ) -> dict[str, Any] | None:
     if not local_han_entries and not local_yaku_name:
         return None
-    if not is_agari_layout(concealed_tiles, melds_data, win_tile_id, is_tsumo=is_tsumo):
+    if not is_agari_layout(concealed_tiles, melds_data, win_tile_id, is_tsumo=is_tsumo, mode=game["mode"]):
         return None
 
     meld_objects = build_meld_objects_from_data(melds_data, seat)
@@ -999,6 +1181,8 @@ def evaluate_local_only_hand(
     local_han_total = sum(han for _, han in local_han_entries)
     total_han = local_han_total + bonus_han
     if total_han <= 0 and not local_yaku_name:
+        return None
+    if not minimum_han_satisfied(game, total_han, local_yaku_name=local_yaku_name):
         return None
 
     base_yaku_names = [f"{name} {han} han" for name, han in local_han_entries] + bonus_names
@@ -1029,7 +1213,7 @@ def evaluate_local_only_hand(
                     "yaku": yaku_names,
                     "fu_details": [dict(item) for item in fu_details],
                     "is_tsumo": is_tsumo,
-                    "win_tile_label": tile_label(win_tile_id),
+                    "win_tile_label": tile_label(win_tile_id, game),
                     "yakuman_keys": {},
                     "yakuman_total_han": 0,
                 }
@@ -1038,9 +1222,24 @@ def evaluate_local_only_hand(
 
 def full_honba_value(game: dict[str, Any], *, is_tsumo: bool) -> int:
     round_state = game["round_state"]
-    if is_tsumo and game["mode"] == "3P":
+    if game.get("mode") == "3P":
         return round_state["honba"] * 200
     return round_state["honba"] * 300
+
+
+def minimum_han_satisfied(
+    game: dict[str, Any],
+    han: int,
+    *,
+    yakuman_total_han: int = 0,
+    local_yaku_name: str | None = None,
+) -> bool:
+    if yakuman_total_han > 0:
+        return True
+    effective_han = han
+    if local_yaku_name:
+        effective_han = max(effective_han, 5)
+    return effective_han >= minimum_han(game)
 
 
 def append_payment_detail(
@@ -1326,7 +1525,7 @@ def tile_type_count_in_layout(concealed_tiles: list[int], melds_data: list[dict[
 def winning_tile_types_for_layout(
     game: dict[str, Any], seat: int, concealed_tiles: list[int], melds_data: list[dict[str, Any]]
 ) -> set[int]:
-    return tenpai_wait_tile_types(concealed_tiles, mode=game["mode"])
+    return tenpai_wait_tile_types(concealed_tiles, mode=game["mode"], melds_data=melds_data)
 
 
 def ensure_round_state_defaults(round_state: dict[str, Any]) -> None:
@@ -1543,6 +1742,10 @@ def should_abort_for_four_kans(round_state: dict[str, Any]) -> bool:
     return round_state["kan_count"] >= 4 and kan_owner_count(round_state) > 1
 
 
+def four_kan_abortive_draw_payload() -> dict[str, str]:
+    return {"kind": "SUUKAIKAN", "headline": ABORTIVE_DRAW_HEADLINES["SUUKAIKAN"]}
+
+
 def should_abort_for_triple_ron(game: dict[str, Any], winners: list[int]) -> bool:
     return False
 
@@ -1551,12 +1754,11 @@ def settle_abortive_draw(game: dict[str, Any], kind: str, headline: str | None =
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
     game["honba"] += 1
-    game["riichi_sticks"] = 0
+    game["riichi_sticks"] = round_state["riichi_sticks"]
     round_state["pending_abortive_draw"] = None
     round_state["pending_kan"] = None
     round_state["pending_kita"] = None
     round_state["pending_dora_reveals"] = 0
-    round_state["riichi_sticks"] = 0
     round_state["round_result"] = {
         "kind": "ABORTIVE_DRAW",
         "subtype": kind,
@@ -1686,10 +1888,9 @@ def resolve_pending_kan(game: dict[str, Any]) -> bool:
     round_state["kan_count"] += 1
     apply_kan_dora_timing(round_state, action_type)
     record_action(game, seat, "KAN", tile_id=tile_id, details=KAN_DETAIL_LABELS[action_type])
+    draw_from_rinshan(game, seat, "岭上摸牌")
     if should_abort_for_four_kans(round_state):
-        settle_abortive_draw(game, "SUUKAIKAN")
-        return True
-    draw_from_rinshan(game, seat, "宀笂鎽哥墝")
+        round_state["pending_abortive_draw"] = four_kan_abortive_draw_payload()
     return True
 
 
@@ -1803,6 +2004,8 @@ def evaluate_hand(
                 kyoutaku_override=kyoutaku_override,
                 tenhou_override=True,
             )
+            if serialized is None:
+                continue
             if best is None or evaluation_result_rank(serialized) > evaluation_result_rank(best):
                 best = serialized
         return best
@@ -1828,8 +2031,16 @@ def evaluate_hand(
         if (
             local_yaku_name
             and not local_han_entries
-            and is_agari_layout(round_state["hands"][seat], round_state["melds"][seat], win_tile_id, is_tsumo=is_tsumo)
+            and is_agari_layout(
+                round_state["hands"][seat],
+                round_state["melds"][seat],
+                win_tile_id,
+                is_tsumo=is_tsumo,
+                mode=game["mode"],
+            )
         ):
+            if not minimum_han_satisfied(game, 0, local_yaku_name=local_yaku_name):
+                return None
             return {
                 "han": 5,
                 "fu": 30,
@@ -1837,7 +2048,7 @@ def evaluate_hand(
                 "yaku": [local_yaku_name],
                 "fu_details": [],
                 "is_tsumo": is_tsumo,
-                "win_tile_label": tile_label(win_tile_id),
+                "win_tile_label": tile_label(win_tile_id, game),
                 "yakuman_keys": {},
                 "yakuman_total_han": 0,
             }
@@ -1880,10 +2091,29 @@ def evaluate_hand(
     han = yakuman_total_han if is_yakuman_hand else base_han + local_han_total
     if not is_yakuman_hand:
         yaku_names.extend(f"{name} {han_value} han" for name, han_value in local_han_entries)
+        aka_han = active_aka_dora_han(
+            game,
+            scoring_tiles_from_layout(
+                round_state["hands"][seat],
+                round_state["melds"][seat],
+                win_tile_id,
+                is_tsumo=is_tsumo,
+            ),
+        )
+        if aka_han:
+            han += aka_han
+            yaku_names.append(f"Aka Dora {aka_han} han")
     nuki = round_state["nuki_count"][seat] if game["mode"] == "3P" and not is_yakuman_hand else 0
     if nuki:
         han += nuki
-        yaku_names.append(f"拔北宝牌 {nuki} 番")
+        yaku_names.append(f"Nuki Dora {nuki} han")
+    if not minimum_han_satisfied(
+        game,
+        han,
+        yakuman_total_han=yakuman_total_han,
+        local_yaku_name=None if is_yakuman_hand else local_yaku_name,
+    ):
+        return None
     score_result = ScoresCalculator.calculate_scores(
         han=han,
         fu=result.fu,
@@ -1905,10 +2135,11 @@ def evaluate_hand(
         "yaku": yaku_names,
         "fu_details": [dict(item) for item in result.fu_details],
         "is_tsumo": is_tsumo,
-        "win_tile_label": tile_label(win_tile_id),
+        "win_tile_label": tile_label(win_tile_id, game),
         "yakuman_keys": yakuman_keys,
         "yakuman_total_han": yakuman_total_han,
     }
+
 
 
 def serialize_evaluation_result(
@@ -1920,7 +2151,7 @@ def serialize_evaluation_result(
     is_tsumo: bool,
     kyoutaku_override: int | None = None,
     tenhou_override: bool | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     round_state = game["round_state"]
     local_yaku_name = local_mangan_yaku_name(game, seat, win_tile_id, is_tsumo=is_tsumo)
     local_yakuman = local_yakuman_entries(game, seat, win_tile_id, is_tsumo=is_tsumo)
@@ -1956,10 +2187,29 @@ def serialize_evaluation_result(
     han = yakuman_total_han if is_yakuman_hand else base_han + local_han_total
     if not is_yakuman_hand:
         yaku_names.extend(f"{name} {han_value} han" for name, han_value in local_han_entries)
+        aka_han = active_aka_dora_han(
+            game,
+            scoring_tiles_from_layout(
+                round_state["hands"][seat],
+                round_state["melds"][seat],
+                win_tile_id,
+                is_tsumo=is_tsumo,
+            ),
+        )
+        if aka_han:
+            han += aka_han
+            yaku_names.append(f"Aka Dora {aka_han} han")
     nuki = round_state["nuki_count"][seat] if game["mode"] == "3P" and not is_yakuman_hand else 0
     if nuki:
         han += nuki
-        yaku_names.append(f"拔北宝牌 {nuki} 番")
+        yaku_names.append(f"Nuki Dora {nuki} han")
+    if not minimum_han_satisfied(
+        game,
+        han,
+        yakuman_total_han=yakuman_total_han,
+        local_yaku_name=None if is_yakuman_hand else local_yaku_name,
+    ):
+        return None
     score_result = ScoresCalculator.calculate_scores(
         han=han,
         fu=result.fu,
@@ -1981,7 +2231,7 @@ def serialize_evaluation_result(
         "yaku": yaku_names,
         "fu_details": [dict(item) for item in result.fu_details],
         "is_tsumo": is_tsumo,
-        "win_tile_label": tile_label(win_tile_id),
+        "win_tile_label": tile_label(win_tile_id, game),
         "yakuman_keys": yakuman_keys,
         "yakuman_total_han": yakuman_total_han,
     }
@@ -2005,11 +2255,11 @@ def evaluation_result_rank(item: dict[str, Any]) -> tuple[int, int, int, int]:
     )
 
 
-def unique_tile_type_candidates(tiles: list[int]) -> list[int]:
+def unique_tile_type_candidates(tiles: list[int], game: dict[str, Any] | None = None) -> list[int]:
     candidates: list[int] = []
     seen_types: set[tuple[int, bool]] = set()
-    for tile_id in sort_tiles(tiles):
-        key = (tile_type(tile_id), is_red(tile_id))
+    for tile_id in sort_tiles(tiles, game):
+        key = (tile_type(tile_id), is_red(tile_id, game))
         if key in seen_types:
             continue
         seen_types.add(key)
@@ -2103,7 +2353,11 @@ def shape_quality_profile(
     quality = 0.0
     label = "\u8fdb\u5f20\u4e00\u822c"
     if shanten_value == 0:
-        wait_types = tenpai_wait_tile_types(tiles_after_discard, mode=game["mode"]) or good_types
+        wait_types = tenpai_wait_tile_types(
+            tiles_after_discard,
+            mode=game["mode"],
+            melds_data=game["round_state"]["melds"][seat],
+        ) or good_types
         label = wait_shape_label(wait_types)
         wait_count = len(wait_types)
         suited_count = sum(1 for wait in wait_types if wait < 27)
@@ -2186,6 +2440,10 @@ def unique_ordered_labels(labels: list[str]) -> list[str]:
 def empty_opponent_profile() -> dict[str, Any]:
     return {
         "threat": 0.0,
+        "threat_type": "unknown",
+        "threat_level": "low",
+        "threat_reasons": [],
+        "push_pressure": 0.0,
         "flush_suit": None,
         "flush_with_honors": False,
         "toitoi": False,
@@ -2260,6 +2518,80 @@ def estimate_opponent_loss(game: dict[str, Any], seat: int, opponent: int, profi
     return min(32000, max(1000, estimated_loss))
 
 
+def threat_level_from_score(threat: float, estimated_loss: int, progress: float) -> str:
+    pressure = threat + min(0.9, estimated_loss / 18000) + progress * 0.22
+    if pressure >= 1.65:
+        return "critical"
+    if pressure >= 1.28:
+        return "high"
+    if pressure >= 0.88:
+        return "medium"
+    return "low"
+
+
+def classify_opponent_threat(
+    game: dict[str, Any],
+    seat: int,
+    opponent: int,
+    profile: dict[str, Any],
+    estimated_loss: int | None = None,
+) -> dict[str, Any]:
+    round_state = game["round_state"]
+    progress = round_progress_ratio(round_state)
+    routes = set(profile.get("routes", [])) | set(profile.get("labels", []))
+    open_meld_count = int(profile.get("open_meld_count", 0))
+    revealed_dora = int(profile.get("revealed_dora", 0))
+    threat = float(profile.get("threat", 0.0))
+    if estimated_loss is None:
+        estimated_loss = estimate_opponent_loss(game, seat, opponent, profile)
+
+    threat_type = "quiet"
+    reasons: list[str] = []
+    if profile.get("riichi"):
+        threat_type = "riichi"
+        reasons.append("立直")
+    elif profile.get("flush_suit") is not None:
+        threat_type = "flush"
+        reasons.append("染手")
+    elif profile.get("toitoi"):
+        threat_type = "toitoi"
+        reasons.append("对对")
+    elif any(label in routes for label in {"役牌", "连风牌"}):
+        threat_type = "yakuhai"
+        reasons.append("役牌")
+    elif open_meld_count >= 2:
+        threat_type = "fast_open"
+        reasons.append("副露快攻")
+    elif open_meld_count == 1 or round_state["nuki_count"][opponent]:
+        threat_type = "open_probe"
+        reasons.append("副露推进")
+
+    if revealed_dora >= 2 or estimated_loss >= 8000:
+        reasons.append("高打点")
+    if opponent == round_state["dealer_seat"]:
+        reasons.append("亲家")
+    if progress >= 0.68:
+        reasons.append("晚巡")
+
+    level = threat_level_from_score(threat, estimated_loss, progress)
+    push_pressure = threat + min(0.95, estimated_loss / 16000) + progress * 0.35
+    if threat_type == "riichi":
+        push_pressure += 0.24
+    elif threat_type in {"flush", "toitoi"}:
+        push_pressure += 0.18
+    elif threat_type == "yakuhai":
+        push_pressure += 0.1
+    if opponent == round_state["dealer_seat"]:
+        push_pressure += 0.12
+
+    return {
+        "threat_type": threat_type,
+        "threat_level": level,
+        "threat_reasons": unique_ordered_labels(reasons)[:4],
+        "push_pressure": round(max(0.0, min(2.6, push_pressure)), 3),
+    }
+
+
 def infer_open_hand_profile(game: dict[str, Any], seat: int, opponent: int) -> dict[str, Any]:
     round_state = game["round_state"]
     if opponent == seat:
@@ -2312,7 +2644,7 @@ def infer_open_hand_profile(game: dict[str, Any], seat: int, opponent: int) -> d
         1
         for meld in melds
         for tile_id in meld["tiles"]
-        if is_red(tile_id) or tile_type(tile_id) in dora_types
+        if is_red(tile_id, game) or tile_type(tile_id) in dora_types
     )
     threat += min(revealed_dora, 3) * 0.05
 
@@ -2398,6 +2730,8 @@ def tile_danger_against_opponent(
 
     routes = set(profile.get("routes", [])) | set(profile.get("labels", []))
     value_honor_types = set(profile.get("value_honor_types", set()))
+    threat_type = str(profile.get("threat_type", "unknown"))
+    threat_level = str(profile.get("threat_level", "low"))
     if is_honor(tile_index):
         tile_base = 0.92 if tile_index in value_honor_types else 0.58
         if visible_counts[tile_index] >= 2:
@@ -2432,9 +2766,24 @@ def tile_danger_against_opponent(
     if profile.get("toitoi") and (is_terminal(tile_index) or is_honor(tile_index) or tile_index in value_honor_types):
         tile_base *= 1.22
 
+    if threat_type == "riichi":
+        tile_base *= 1.12
+    elif threat_type == "flush" and suit_index == flush_suit:
+        tile_base *= 1.08
+    elif threat_type == "yakuhai" and (is_honor(tile_index) or tile_index in value_honor_types):
+        tile_base *= 1.12
+    elif threat_type == "fast_open" and not is_honor(tile_index):
+        tile_base *= 1.06
+
+    tile_base *= {
+        "critical": 1.18,
+        "high": 1.1,
+        "medium": 1.03,
+    }.get(threat_level, 1.0)
+
     if dora_types is None:
         dora_types = {dora_from_indicator(tile_id, mode=game["mode"]) for tile_id in current_dora_indicators(round_state)}
-    if is_red(discard_tile_id) or tile_index in dora_types:
+    if is_red(discard_tile_id, game) or tile_index in dora_types:
         tile_base *= 1.34
 
     suji_multiplier = suji_safety_multiplier(tile_index, opponent_discards)
@@ -2471,11 +2820,13 @@ def build_tile_risk_context(
         profile = infer_open_hand_profile(game, seat, opponent)
         if profile["threat"] <= 0:
             continue
+        estimated_loss = estimate_opponent_loss(game, seat, opponent, profile)
+        profile.update(classify_opponent_threat(game, seat, opponent, profile, estimated_loss))
         opponents.append(
             {
                 "seat": opponent,
                 "profile": profile,
-                "estimated_loss": estimate_opponent_loss(game, seat, opponent, profile),
+                "estimated_loss": estimated_loss,
             }
         )
     return {
@@ -2543,11 +2894,97 @@ def discard_risk_sources(
                 "seat": opponent,
                 "name": game["players"][opponent]["name"],
                 "risk": round(danger, 3),
-                "routes": labels[:3],
+                "routes": unique_ordered_labels(list(profile.get("threat_reasons", [])) + list(labels))[:3],
                 "estimated_loss": item["estimated_loss"],
+                "threat_type": profile.get("threat_type", "unknown"),
+                "threat_level": profile.get("threat_level", "low"),
             }
         )
     return sorted(sources, key=lambda item: (-item["risk"], -item["estimated_loss"]))[:3]
+
+
+def discard_deal_in_loss_profile(
+    game: dict[str, Any],
+    seat: int,
+    discard_tile_id: int,
+    *,
+    risk_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = risk_context if risk_context is not None else build_tile_risk_context(game, seat)
+    opponents = context["opponents"]
+    if not opponents:
+        return {
+            "deal_in_loss_ev": 0.0,
+            "deal_in_rate": 0.0,
+            "deal_in_points": 0,
+            "deal_in_label": "无放铳压力",
+        }
+
+    visible_counts = context["visible_counts"]
+    tile_index = tile_type(discard_tile_id)
+    progress = round_progress_ratio(game["round_state"])
+    total_expected_points = 0.0
+    max_rate = 0.0
+    top_label = "低风险"
+
+    for item in opponents:
+        opponent = item["seat"]
+        profile = item["profile"]
+        danger = tile_danger_against_opponent(
+            game,
+            seat,
+            opponent,
+            discard_tile_id,
+            profile,
+            visible_counts,
+            dora_types=context["dora_types"],
+            estimated_loss=item["estimated_loss"],
+        )
+        if danger <= 0:
+            continue
+        safety, safety_label = tile_safety_against_opponent(game, opponent, tile_index, profile, visible_counts)
+        push_pressure = float(profile.get("push_pressure", profile.get("threat", 0.0)))
+        threat_level = str(profile.get("threat_level", "low"))
+        level_rate = {
+            "critical": 1.45,
+            "high": 1.24,
+            "medium": 1.08,
+            "low": 0.9,
+        }.get(threat_level, 1.0)
+        threat_type = str(profile.get("threat_type", "unknown"))
+        type_rate = {
+            "riichi": 1.18,
+            "flush": 1.1,
+            "toitoi": 1.08,
+            "yakuhai": 1.06,
+            "fast_open": 1.05,
+        }.get(threat_type, 1.0)
+        safety_discount = max(0.38, 1.08 - safety * 0.68)
+        raw_rate = danger * 0.034 * level_rate * type_rate * safety_discount
+        raw_rate *= 0.72 + progress * 0.62 + min(0.32, push_pressure * 0.1)
+        deal_in_rate = max(0.0, min(0.42, raw_rate))
+        expected_points = deal_in_rate * int(item["estimated_loss"])
+        total_expected_points += expected_points
+        if deal_in_rate > max_rate:
+            max_rate = deal_in_rate
+            top_label = safety_label
+
+    loss_ev = -(total_expected_points / 118.0)
+    if max_rate >= 0.18:
+        label = f"高放铳风险：{top_label}"
+    elif max_rate >= 0.09:
+        label = f"中放铳风险：{top_label}"
+    elif max_rate > 0:
+        label = f"低放铳风险：{top_label}"
+    else:
+        label = "安全牌压力低"
+
+    return {
+        "deal_in_loss_ev": round(max(-120.0, min(0.0, loss_ev)), 3),
+        "deal_in_rate": round(max_rate, 3),
+        "deal_in_points": int(round(total_expected_points)),
+        "deal_in_label": label,
+    }
 
 
 def tile_safety_against_opponent(
@@ -2589,6 +3026,98 @@ def tile_safety_against_opponent(
     return 0.12, "无筋"
 
 
+def aggregate_tile_safety_score(
+    game: dict[str, Any],
+    seat: int,
+    tile_index: int,
+    risk_context: dict[str, Any],
+) -> float:
+    opponents = risk_context["opponents"]
+    if not opponents:
+        return 0.0
+    safety_cache = risk_context.setdefault("aggregate_safety_cache", {})
+    if tile_index in safety_cache:
+        return float(safety_cache[tile_index])
+
+    visible_counts = risk_context["visible_counts"]
+    weighted_safety = 0.0
+    total_weight = 0.0
+    for item in opponents:
+        profile = item["profile"]
+        threat = float(profile.get("threat", 0.0))
+        push_pressure = float(profile.get("push_pressure", threat))
+        estimated_loss = int(item["estimated_loss"])
+        weight = max(threat, push_pressure * 0.72) * (0.7 + min(0.9, estimated_loss / 22000))
+        safety, _ = tile_safety_against_opponent(game, item["seat"], tile_index, profile, visible_counts)
+        weighted_safety += safety * weight
+        total_weight += weight
+    score = weighted_safety / total_weight if total_weight else 0.0
+    safety_cache[tile_index] = score
+    return score
+
+
+def safe_tile_reserve_profile(
+    game: dict[str, Any],
+    seat: int,
+    remaining_tiles: list[int],
+    discarded_tile_id: int,
+    shanten_value: int,
+    risk_context: dict[str, Any],
+) -> dict[str, Any]:
+    opponents = risk_context["opponents"]
+    if not opponents:
+        return {
+            "safe_reserve_ev": 0.0,
+            "safe_reserve_score": 0.0,
+            "safe_reserve_label": "无明显威胁",
+        }
+
+    progress = round_progress_ratio(game["round_state"])
+    max_pressure = max(
+        float(item["profile"].get("push_pressure", item["profile"].get("threat", 0.0))) for item in opponents
+    )
+    if shanten_value <= 0 and max_pressure < 1.28:
+        target_reserve = 0.58
+    elif shanten_value <= 1:
+        target_reserve = 0.9
+    else:
+        target_reserve = 1.2
+
+    remaining_scores: list[float] = []
+    for tile_id in remaining_tiles:
+        tile_index = tile_type(tile_id)
+        if not is_tile_type_legal_in_mode(tile_index, game["mode"]):
+            continue
+        remaining_scores.append(aggregate_tile_safety_score(game, seat, tile_index, risk_context))
+
+    best_reserves = sorted(remaining_scores, reverse=True)[:2]
+    reserve_score = sum(best_reserves)
+    discarded_safety = aggregate_tile_safety_score(game, seat, tile_type(discarded_tile_id), risk_context)
+    pressure_scale = 0.58 + min(1.0, max_pressure / 1.65) + progress * 0.24
+    reserve_gap = max(0.0, target_reserve - reserve_score)
+    reserve_ev = -reserve_gap * (12.0 + pressure_scale * 9.0)
+
+    if discarded_safety >= 0.74 and reserve_score < target_reserve:
+        reserve_ev -= (discarded_safety - max(best_reserves or [0.0])) * (9.0 + pressure_scale * 8.0)
+    elif reserve_score >= target_reserve + 0.28:
+        reserve_ev += min(8.0, (reserve_score - target_reserve) * (6.0 + pressure_scale * 3.0))
+
+    if reserve_score >= target_reserve + 0.28:
+        label = "保留了安全牌储备"
+    elif discarded_safety >= 0.74 and reserve_score < target_reserve:
+        label = "切掉安全牌后储备不足"
+    elif reserve_score < target_reserve:
+        label = "安全牌储备偏少"
+    else:
+        label = "安全牌储备可接受"
+
+    return {
+        "safe_reserve_ev": round(max(-42.0, min(18.0, reserve_ev)), 3),
+        "safe_reserve_score": round(reserve_score, 3),
+        "safe_reserve_label": label,
+    }
+
+
 def defensive_discard_profile(
     game: dict[str, Any],
     seat: int,
@@ -2614,15 +3143,21 @@ def defensive_discard_profile(
     total_weight = 0.0
     label_weights: dict[str, float] = {}
     max_threat = 0.0
+    max_push_pressure = 0.0
     max_loss = 0
+    high_threat_count = 0
 
     for item in opponents:
         profile = item["profile"]
         estimated_loss = int(item["estimated_loss"])
         threat = float(profile["threat"])
+        push_pressure = float(profile.get("push_pressure", threat))
         max_threat = max(max_threat, threat)
+        max_push_pressure = max(max_push_pressure, push_pressure)
         max_loss = max(max_loss, estimated_loss)
-        weight = threat * (0.72 + min(0.85, estimated_loss / 24000))
+        if profile.get("threat_level") in {"high", "critical"}:
+            high_threat_count += 1
+        weight = max(threat, push_pressure * 0.72) * (0.72 + min(0.85, estimated_loss / 24000))
         safety, label = tile_safety_against_opponent(game, item["seat"], tile_index, profile, visible_counts)
         weighted_safety += safety * weight
         total_weight += weight
@@ -2630,7 +3165,13 @@ def defensive_discard_profile(
 
     safety_score = weighted_safety / total_weight if total_weight else 0.0
     progress = round_progress_ratio(round_state)
-    pressure = max_threat + min(0.72, max_loss / 24000) + progress * 0.38
+    pressure = (
+        max_threat
+        + max_push_pressure * 0.22
+        + min(0.72, max_loss / 24000)
+        + progress * 0.38
+        + high_threat_count * 0.08
+    )
     offense_commitment = 0.58 if shanten_value <= 0 else 0.42 if shanten_value == 1 else 0.18 if shanten_value == 2 else -0.06
     level_scale = policy["defense_scale"]
     defense_need = max(0.0, pressure - offense_commitment) * level_scale
@@ -2688,15 +3229,23 @@ def push_fold_profile(
     round_state = game["round_state"]
     progress = round_progress_ratio(round_state)
     max_threat = max(float(item["profile"]["threat"]) for item in opponents)
+    max_push_pressure = max(
+        float(item["profile"].get("push_pressure", item["profile"]["threat"])) for item in opponents
+    )
     max_loss = max(int(item["estimated_loss"]) for item in opponents)
     riichi_count = sum(1 for item in opponents if item["profile"].get("riichi"))
+    critical_count = sum(1 for item in opponents if item["profile"].get("threat_level") == "critical")
+    high_count = sum(1 for item in opponents if item["profile"].get("threat_level") == "high")
 
     pressure = (
         max_threat * 0.82
+        + max_push_pressure * 0.3
         + min(0.92, max_loss / 18000)
         + min(0.72, risk / 4.8)
         + progress * 0.42
         + riichi_count * 0.16
+        + critical_count * 0.16
+        + high_count * 0.08
     )
     pressure += strategy["defense_bias"] * 0.62
     pressure -= strategy["attack_bias"] * 0.28
@@ -2779,8 +3328,13 @@ def defense_override_profile(
     round_state = game["round_state"]
     progress = round_progress_ratio(round_state)
     max_threat = max(float(item["profile"]["threat"]) for item in opponents)
+    max_push_pressure = max(
+        float(item["profile"].get("push_pressure", item["profile"]["threat"])) for item in opponents
+    )
     max_loss = max(int(item["estimated_loss"]) for item in opponents)
     riichi_count = sum(1 for item in opponents if item["profile"].get("riichi"))
+    critical_count = sum(1 for item in opponents if item["profile"].get("threat_level") == "critical")
+    high_count = sum(1 for item in opponents if item["profile"].get("threat_level") == "high")
     open_monster_count = sum(
         1
         for item in opponents
@@ -2789,10 +3343,13 @@ def defense_override_profile(
 
     pressure = (
         max_threat
+        + max_push_pressure * 0.28
         + min(0.95, max_loss / 17000)
         + min(0.72, risk / 4.2)
         + progress * 0.46
         + riichi_count * 0.24
+        + critical_count * 0.2
+        + high_count * 0.1
         + open_monster_count * 0.16
         + strategy["defense_bias"] * 0.72
     )
@@ -2870,7 +3427,7 @@ def defense_override_profile(
 def tile_value_bonus(game: dict[str, Any], seat: int, discard_tile_id: int) -> float:
     round_state = game["round_state"]
     bonus = 0.0
-    if is_red(discard_tile_id):
+    if is_red(discard_tile_id, game):
         bonus += 1.0
     dora_types = {dora_from_indicator(tile, mode=game["mode"]) for tile in current_dora_indicators(round_state)}
     if tile_type(discard_tile_id) in dora_types:
@@ -3040,7 +3597,7 @@ def hand_value_profile(
         all_tiles.extend(meld["tiles"])
     all_types = [tile_type(tile_id) for tile_id in all_tiles]
     dora_types = {dora_from_indicator(tile_id, mode=game["mode"]) for tile_id in current_dora_indicators(round_state)}
-    dora_count = sum(1 for tile_id in all_tiles if is_red(tile_id) or tile_type(tile_id) in dora_types)
+    dora_count = sum(1 for tile_id in all_tiles if is_red(tile_id, game) or tile_type(tile_id) in dora_types)
     if game["mode"] == "3P":
         dora_count += round_state["nuki_count"][seat]
 
@@ -3109,11 +3666,16 @@ def opponent_models(game: dict[str, Any], seat: int) -> list[dict[str, Any]]:
         if profile["threat"] <= 0:
             continue
         estimated_loss = estimate_opponent_loss(game, seat, opponent, profile)
+        profile.update(classify_opponent_threat(game, seat, opponent, profile, estimated_loss))
 
         models.append(
             {
                 "seat": opponent,
                 "threat": profile["threat"],
+                "threat_type": profile.get("threat_type", "unknown"),
+                "threat_level": profile.get("threat_level", "low"),
+                "threat_reasons": profile.get("threat_reasons", []),
+                "push_pressure": profile.get("push_pressure", profile["threat"]),
                 "labels": profile["labels"],
                 "routes": profile.get("routes", []),
                 "speed_class": profile.get("speed_class", "未知"),
@@ -3286,6 +3848,90 @@ def table_pressure_ev(game: dict[str, Any], seat: int, shanten_value: int, risk:
     return round(ev, 3)
 
 
+def placement_rank_for_points(points: list[int], seat: int) -> int:
+    standings = sorted(range(len(points)), key=lambda item: (-points[item], item))
+    return standings.index(seat) + 1
+
+
+def placement_utility(rank: int, player_count_value: int) -> float:
+    if player_count_value == 3:
+        return {1: 42.0, 2: 4.0, 3: -46.0}.get(rank, -46.0)
+    return {1: 48.0, 2: 14.0, 3: -16.0, 4: -54.0}.get(rank, -54.0)
+
+
+def global_reward_delta_profile(
+    game: dict[str, Any],
+    seat: int,
+    *,
+    shanten_value: int,
+    ukeire: int,
+    wait_quality: float,
+    estimated_value: int,
+    estimated_han: float,
+    deal_in_rate: float,
+    deal_in_points: int,
+    strategy: dict[str, Any],
+    level: int,
+) -> dict[str, Any]:
+    points = [int(player["points"]) for player in game["players"]]
+    player_count_value = len(points)
+    current_rank = placement_rank_for_points(points, seat)
+    current_utility = placement_utility(current_rank, player_count_value)
+
+    win_points = max(0, estimated_value + game.get("riichi_sticks", 0) * 1000 + game.get("honba", 0) * 300)
+    win_points_state = list(points)
+    win_points_state[seat] += win_points
+    win_rank = placement_rank_for_points(win_points_state, seat)
+    win_delta = placement_utility(win_rank, player_count_value) - current_utility
+
+    loss_points_state = list(points)
+    loss_points_state[seat] -= max(0, deal_in_points)
+    loss_rank = placement_rank_for_points(loss_points_state, seat)
+    loss_delta = placement_utility(loss_rank, player_count_value) - current_utility
+
+    speed_proxy = max(0.0, 4.0 - max(0, shanten_value)) / 4.0
+    win_probability_proxy = min(0.46, 0.03 + speed_proxy * 0.12 + min(0.16, ukeire / 120.0) + wait_quality * 0.08)
+    if shanten_value <= 0:
+        win_probability_proxy += 0.08
+    if estimated_han >= 5:
+        win_probability_proxy += 0.03
+    win_probability_proxy = min(0.58, win_probability_proxy)
+
+    progress = round_progress_ratio(game["round_state"])
+    loss_probability_proxy = min(0.42, deal_in_rate * (0.85 + progress * 0.35))
+    late_multiplier = 1.0
+    if strategy["is_all_last"]:
+        late_multiplier += 0.35
+        if current_rank == 1:
+            late_multiplier += 0.25
+        elif current_rank == player_count_value:
+            late_multiplier += 0.18
+
+    utility_ev = (win_delta * win_probability_proxy + loss_delta * loss_probability_proxy) * late_multiplier
+    point_ev = (win_points * win_probability_proxy - deal_in_points * loss_probability_proxy) / 1700.0
+    if strategy["placement"] == 1 and strategy["is_all_last"]:
+        point_ev *= 0.36
+    elif strategy["placement"] == strategy["placement_count"]:
+        point_ev *= 1.18
+
+    global_ev = (utility_ev * (0.55 + level * 0.08)) + point_ev
+    if win_delta > 0 and global_ev > 0:
+        label = "顺位收益：追分有效"
+    elif loss_delta < 0 and deal_in_points > 0:
+        label = "顺位风险：失点会伤排名"
+    elif strategy["placement"] == 1:
+        label = "顺位目标：守住领先"
+    else:
+        label = "顺位目标：正常推进"
+
+    return {
+        "global_reward_ev": round(max(-48.0, min(52.0, global_ev)), 3),
+        "global_reward_label": label,
+        "win_rank_delta": current_rank - win_rank,
+        "loss_rank_delta": current_rank - loss_rank,
+    }
+
+
 def structured_discard_ev(
     game: dict[str, Any],
     seat: int,
@@ -3303,6 +3949,7 @@ def structured_discard_ev(
     opponent_pressure = opponent_models(game, seat)
     max_loss = max((model["estimated_loss"] for model in opponent_pressure), default=0)
     max_threat = max((model["threat"] for model in opponent_pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in opponent_pressure), default=0.0)
 
     speed_weight = 1.65 + (level * 0.62)
     shanten_weight = 104 + (level * 4)
@@ -3324,7 +3971,13 @@ def structured_discard_ev(
         caution += 0.22
     if max_loss >= 8000:
         caution += 0.16
-    danger_scale = 1.0 + (progress * 0.55) + (max_threat * 0.18) + min(0.45, max_loss / 32000)
+    danger_scale = (
+        1.0
+        + (progress * 0.55)
+        + (max_threat * 0.18)
+        + (max_push_pressure * 0.12)
+        + min(0.45, max_loss / 32000)
+    )
     defense_ev = -(risk * 15.5 * caution * danger_scale)
 
     table_ev = table_pressure_ev(game, seat, shanten_value, risk, level)
@@ -3371,7 +4024,7 @@ def lookahead_after_discard_ev(
                 include_lookahead=False,
                 risk_context=risk_context,
             )
-            for tile_id in unique_tile_type_candidates(simulated_hand)
+            for tile_id in unique_tile_type_candidates(simulated_hand, game)
         ]
         if not next_profiles:
             continue
@@ -3385,6 +4038,409 @@ def lookahead_after_discard_ev(
     average_next_ev = weighted_total / total_weight
     lookahead_ev = (average_next_ev - base_final_ev) * 0.16
     return round(max(-28.0, min(28.0, lookahead_ev)), 3)
+
+
+def alpha_used_count_key(used_counts: dict[int, int]) -> tuple[tuple[int, int], ...]:
+    return tuple(sorted((tile_index, amount) for tile_index, amount in used_counts.items() if amount > 0))
+
+
+def alpha_hand_count_key(hand_tiles: list[int]) -> tuple[int, ...]:
+    return tuple(to_34_array(hand_tiles))
+
+
+def alpha_remaining_count(tile_index: int, visible_counts: list[int], used_counts: dict[int, int]) -> int:
+    return max(0, 4 - visible_counts[tile_index] - used_counts.get(tile_index, 0))
+
+
+def alpha_effective_ukeire_from_state(
+    game: dict[str, Any],
+    hand_tiles: list[int],
+    visible_counts: list[int],
+    used_counts: dict[int, int],
+    base_shanten: int,
+) -> tuple[int, list[int]]:
+    ukeire = 0
+    waits: list[int] = []
+    for tile_index in legal_tile_types_for_mode(game["mode"]):
+        remaining = alpha_remaining_count(tile_index, visible_counts, used_counts)
+        if remaining <= 0:
+            continue
+        draw_id = representative_tile_id(tile_index, hand_tiles)
+        try:
+            next_shanten = shanten_calculator.calculate_shanten(to_34_array(hand_tiles + [draw_id]))
+        except ValueError:
+            continue
+        if next_shanten < base_shanten or (base_shanten == 0 and next_shanten == -1):
+            ukeire += remaining
+            waits.append(tile_index)
+    return ukeire, waits
+
+
+def alpha_terminal_projection_ev(
+    game: dict[str, Any],
+    seat: int,
+    hand_tiles: list[int],
+    level: int,
+    visible_counts: list[int],
+    used_counts: dict[int, int],
+) -> float:
+    shanten_value = shanten_of_tiles(hand_tiles)
+    if shanten_value <= -1:
+        return 260.0
+
+    ukeire, wait_types = alpha_effective_ukeire_from_state(game, hand_tiles, visible_counts, used_counts, shanten_value)
+    route_bonus, routes = hand_route_profile(game, seat, hand_tiles, shanten_value=shanten_value)
+    wait_quality = 0.0
+    if wait_types:
+        wait_quality = min(1.0, (len(wait_types) / 5.0) + min(0.35, ukeire / 32.0))
+    value_profile = hand_value_profile(game, seat, hand_tiles, shanten_value=shanten_value, routes=routes, wait_quality=wait_quality)
+    strategy = placement_strategy_context(game, seat)
+    pressure = opponent_models(game, seat)
+    max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
+    max_loss = max((model["estimated_loss"] for model in pressure), default=0)
+
+    ev = (-106.0 * shanten_value) + (ukeire * (2.0 + level * 0.24))
+    ev += route_bonus * 0.72
+    ev += value_profile["hand_value_ev"] * 0.72
+    ev += strategy["attack_bias"] * 9.0 + strategy["value_bias"] * 7.0
+    ev -= strategy["defense_bias"] * (5.0 + max_push_pressure * 7.0 + max_threat * 3.0) * (
+        1.0 if shanten_value >= 2 else 0.42
+    )
+    if shanten_value >= 2:
+        ev -= max_threat * 6.0 + max_push_pressure * 5.0 + min(10.0, max_loss / 2400)
+    elif shanten_value <= 0:
+        ev += wait_quality * 18.0
+    return round(max(-380.0, min(300.0, ev)), 3)
+
+
+def alpha_draw_candidates(
+    game: dict[str, Any],
+    seat: int,
+    hand_tiles: list[int],
+    visible_counts: list[int],
+    used_counts: dict[int, int],
+    *,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    base_shanten = shanten_of_tiles(hand_tiles)
+    dora_types = {dora_from_indicator(tile_id, mode=game["mode"]) for tile_id in current_dora_indicators(game["round_state"])}
+    candidates: list[dict[str, Any]] = []
+    counts = to_34_array(hand_tiles)
+
+    for tile_index in legal_tile_types_for_mode(game["mode"]):
+        remaining = alpha_remaining_count(tile_index, visible_counts, used_counts)
+        if remaining <= 0 or counts[tile_index] >= 4:
+            continue
+        draw_id = representative_tile_id(tile_index, hand_tiles)
+        try:
+            next_shanten = shanten_calculator.calculate_shanten(to_34_array(hand_tiles + [draw_id]))
+        except ValueError:
+            continue
+        shanten_gain = base_shanten - next_shanten
+        score = float(remaining)
+        if next_shanten <= -1:
+            score += 220.0
+        elif shanten_gain > 0:
+            score += 56.0 * shanten_gain
+        elif base_shanten <= 1:
+            score += 7.0
+        if tile_index in dora_types:
+            score += 12.0
+        if is_honor(tile_index):
+            score += 3.0 if counts[tile_index] >= 1 else -2.5
+        else:
+            rank = tile_index % 9
+            if rank in {2, 3, 4, 5, 6}:
+                score += 2.0
+            if any(0 <= tile_index + offset < 27 and (tile_index + offset) // 9 == tile_index // 9 and counts[tile_index + offset] for offset in {-2, -1, 1, 2}):
+                score += 4.0
+        candidates.append(
+            {
+                "type": tile_index,
+                "tile_id": draw_id,
+                "remaining": remaining,
+                "next_shanten": next_shanten,
+                "score": round(score, 3),
+            }
+        )
+
+    return sorted(candidates, key=lambda item: (-float(item["score"]), -int(item["remaining"]), int(item["type"])))[:max_candidates]
+
+
+def alpha_branch_search_ev(
+    game: dict[str, Any],
+    seat: int,
+    hand_tiles: list[int],
+    level: int,
+    *,
+    depth: int,
+    visible_counts: list[int],
+    used_counts: dict[int, int],
+    cache: dict[tuple[Any, ...], float],
+) -> float:
+    cache_key = (depth, alpha_hand_count_key(hand_tiles), alpha_used_count_key(used_counts))
+    if cache_key in cache:
+        return cache[cache_key]
+
+    if depth <= 0:
+        value = alpha_terminal_projection_ev(game, seat, hand_tiles, level, visible_counts, used_counts)
+        cache[cache_key] = value
+        return value
+
+    draw_candidates = alpha_draw_candidates(
+        game,
+        seat,
+        hand_tiles,
+        visible_counts,
+        used_counts,
+        max_candidates=ALPHA_SEARCH_DRAW_BEAM,
+    )
+    if not draw_candidates:
+        value = alpha_terminal_projection_ev(game, seat, hand_tiles, level, visible_counts, used_counts)
+        cache[cache_key] = value
+        return value
+
+    weighted_total = 0.0
+    total_weight = 0
+    for draw in draw_candidates:
+        draw_type = int(draw["type"])
+        remaining = int(draw["remaining"])
+        drawn_tile_id = representative_tile_id(draw_type, hand_tiles)
+        simulated_hand = sort_tiles(hand_tiles + [drawn_tile_id])
+        next_used_counts = dict(used_counts)
+        next_used_counts[draw_type] = next_used_counts.get(draw_type, 0) + 1
+
+        if shanten_of_tiles(simulated_hand) <= -1:
+            branch_ev = alpha_terminal_projection_ev(game, seat, simulated_hand, level, visible_counts, next_used_counts)
+        else:
+            branch_risk_context = build_tile_risk_context(game, seat, hand_tiles=simulated_hand)
+            profiles = [
+                discard_profile(
+                    game,
+                    seat,
+                    tile_id,
+                    level,
+                    hand_tiles=simulated_hand,
+                    include_lookahead=False,
+                    risk_context=branch_risk_context,
+                )
+                for tile_id in unique_tile_type_candidates(simulated_hand, game)
+            ]
+            best_branch = -9999.0
+            for profile in sorted(profiles, key=lambda item: (-item["score"], item["tile_label"]))[:ALPHA_SEARCH_DISCARD_BEAM]:
+                next_hand = list(simulated_hand)
+                try:
+                    next_hand.remove(profile["tile_id"])
+                except ValueError:
+                    continue
+                future_ev = alpha_branch_search_ev(
+                    game,
+                    seat,
+                    next_hand,
+                    level,
+                    depth=depth - 1,
+                    visible_counts=visible_counts,
+                    used_counts=next_used_counts,
+                    cache=cache,
+                )
+                profile_ev = float(profile["final_ev"])
+                branch_ev = profile_ev + ((future_ev - profile_ev) * ALPHA_SEARCH_DISCOUNT)
+                best_branch = max(best_branch, branch_ev)
+            branch_ev = best_branch if best_branch > -9999.0 else alpha_terminal_projection_ev(game, seat, hand_tiles, level, visible_counts, next_used_counts)
+
+        weighted_total += branch_ev * remaining
+        total_weight += remaining
+
+    if total_weight <= 0:
+        value = alpha_terminal_projection_ev(game, seat, hand_tiles, level, visible_counts, used_counts)
+    else:
+        value = round(weighted_total / total_weight, 3)
+    cache[cache_key] = value
+    return value
+
+
+def alpha_style_lookahead_profile(
+    game: dict[str, Any],
+    seat: int,
+    tiles_after_discard: list[int],
+    good_tiles: list[dict[str, Any]],
+    *,
+    level: int,
+    base_final_ev: float,
+    risk_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if level < 3 or not good_tiles:
+        return {
+            "lookahead_ev": 0.0,
+            "alpha_search_ev": 0.0,
+            "alpha_search_depth": 0,
+            "alpha_search_label": "",
+        }
+
+    fast_ev = lookahead_after_discard_ev(
+        game,
+        seat,
+        tiles_after_discard,
+        good_tiles,
+        level=level,
+        base_final_ev=base_final_ev,
+        risk_context=risk_context,
+    )
+    visible_counts = visible_tile_type_counts(game, seat, hand_tiles=tiles_after_discard)
+    search_ev = alpha_branch_search_ev(
+        game,
+        seat,
+        tiles_after_discard,
+        level,
+        depth=ALPHA_SEARCH_DEPTH,
+        visible_counts=visible_counts,
+        used_counts={},
+        cache={},
+    )
+    alpha_adjust = round((search_ev - base_final_ev) * ALPHA_SEARCH_WEIGHT, 3)
+    combined = round(max(-54.0, min(58.0, alpha_adjust + fast_ev * 0.35)), 3)
+    label = "\u591a\u5de1\u6a21\u62df" if combined >= 0 else "\u591a\u5de1\u8def\u7ebf\u504f\u5f31"
+    return {
+        "lookahead_ev": combined,
+        "alpha_search_ev": round(search_ev, 3),
+        "alpha_search_depth": ALPHA_SEARCH_DEPTH,
+        "alpha_search_label": label,
+    }
+
+
+def alpha_projection_for_hand(
+    game: dict[str, Any],
+    seat: int,
+    hand_tiles: list[int],
+    level: int,
+    *,
+    depth: int = ALPHA_ACTION_SEARCH_DEPTH,
+) -> float:
+    if level < 3:
+        return 0.0
+    visible_counts = visible_tile_type_counts(game, seat, hand_tiles=hand_tiles)
+    return alpha_branch_search_ev(
+        game,
+        seat,
+        hand_tiles,
+        level,
+        depth=depth,
+        visible_counts=visible_counts,
+        used_counts={},
+        cache={},
+    )
+
+
+def alpha_open_call_projection_profile(
+    game: dict[str, Any],
+    seat: int,
+    concealed_after_call: list[int],
+    best_discard: dict[str, Any] | None,
+    level: int,
+    yaku_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if level < 3:
+        return {
+            "alpha_action_ev": 0.0,
+            "alpha_action_search_ev": 0.0,
+            "alpha_action_label": "",
+            "alpha_action_depth": 0,
+        }
+
+    projected_hand = list(concealed_after_call)
+    base_ev = alpha_terminal_projection_ev(game, seat, projected_hand, level, visible_tile_type_counts(game, seat, hand_tiles=projected_hand), {})
+    if isinstance(best_discard, dict) and best_discard.get("tile_id") in projected_hand:
+        projected_hand.remove(best_discard["tile_id"])
+        base_ev = float(best_discard.get("final_ev", base_ev))
+
+    search_ev = alpha_projection_for_hand(game, seat, projected_hand, level, depth=ALPHA_ACTION_SEARCH_DEPTH)
+    action_ev = round((search_ev - base_ev) * ALPHA_ACTION_SEARCH_WEIGHT, 3)
+    label = "\u9e23\u540e\u8def\u7ebf\u597d" if action_ev >= 0 else "\u9e23\u540e\u8def\u7ebf\u5dee"
+    if yaku_profile is not None and not bool(yaku_profile.get("has_yaku_path", False)):
+        action_ev = min(action_ev, -12.0)
+        label = "\u6a21\u62df\u8def\u7ebf\u65e0\u5f79"
+    elif yaku_profile is not None and not bool(yaku_profile.get("guaranteed_yaku", False)):
+        confidence = float(yaku_profile.get("yaku_confidence") or 0.0)
+        if confidence < 0.62:
+            action_ev -= 5.0
+            label = "\u6a21\u62df\u5f79\u8def\u504f\u5f31" if action_ev < 0 else "\u9e23\u540e\u8def\u7ebf\u5c1a\u53ef"
+    return {
+        "alpha_action_ev": round(max(-34.0, min(36.0, action_ev)), 3),
+        "alpha_action_search_ev": round(search_ev, 3),
+        "alpha_action_label": label,
+        "alpha_action_depth": ALPHA_ACTION_SEARCH_DEPTH,
+    }
+
+
+def alpha_riichi_projection_profile(
+    game: dict[str, Any],
+    seat: int,
+    remaining_after_riichi: list[int],
+    discard_profile_item: dict[str, Any],
+    level: int,
+) -> dict[str, Any]:
+    if level < 3:
+        return {
+            "alpha_action_ev": 0.0,
+            "alpha_action_search_ev": 0.0,
+            "alpha_action_label": "",
+            "alpha_action_depth": 0,
+        }
+
+    round_state = game["round_state"]
+    wait_types = tenpai_wait_tile_types(
+        remaining_after_riichi,
+        mode=game["mode"],
+        melds_data=game["round_state"]["melds"][seat],
+    )
+    visible_counts = visible_tile_type_counts(game, seat, hand_tiles=remaining_after_riichi)
+    remaining_waits = sum(max(0, 4 - visible_counts[tile_index]) for tile_index in wait_types)
+    live_tiles = max(1, len(round_state["live_wall"]))
+    wait_quality = float(discard_profile_item.get("wait_quality", 0.0))
+    risk = float(discard_profile_item.get("risk", 0.0))
+    estimated_han = float(discard_profile_item.get("estimated_han", 0.0))
+    estimated_value = int(discard_profile_item.get("estimated_value", 0) or 0)
+    strategy = placement_strategy_context(game, seat)
+    pressure = opponent_models(game, seat)
+    max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
+    max_loss = max((model["estimated_loss"] for model in pressure), default=0)
+    progress = round_progress_ratio(round_state)
+
+    wait_density = remaining_waits / live_tiles
+    search_ev = (
+        remaining_waits * 9.0
+        + wait_density * 180.0
+        + wait_quality * 24.0
+        + estimated_han * 7.0
+        + min(26.0, estimated_value / 900)
+        + strategy["riichi_bias"] * 14.0
+        + strategy["attack_bias"] * 8.0
+        - strategy["defense_bias"] * 12.0
+        - risk * (8.0 + progress * 9.0)
+        - max_threat * (4.0 + progress * 5.0)
+        - max_push_pressure * (3.0 + progress * 5.0)
+        - min(10.0, max_loss / 3900) * progress
+    )
+    if remaining_waits <= 2:
+        search_ev -= 18.0
+    if remaining_waits >= 6 and estimated_han <= 2:
+        search_ev += 8.0
+    if strategy["is_all_last"] and strategy["placement"] == 1:
+        search_ev -= 16.0 + max_threat * 4.0
+    if can_double_riichi(round_state, seat):
+        search_ev += 10.0
+
+    base_ev = float(discard_profile_item.get("final_ev", 0.0))
+    action_ev = round((search_ev - base_ev) * ALPHA_RIICHI_SEARCH_WEIGHT, 3)
+    label = "\u7acb\u76f4\u8def\u7ebf\u597d" if action_ev >= 0 else "\u7acb\u76f4\u9501\u624b\u504f\u5f31"
+    return {
+        "alpha_action_ev": round(max(-38.0, min(42.0, action_ev)), 3),
+        "alpha_action_search_ev": round(max(-140.0, min(180.0, search_ev)), 3),
+        "alpha_action_label": label,
+        "alpha_action_depth": 1,
+    }
 
 
 def discard_profile(
@@ -3404,7 +4460,7 @@ def discard_profile(
     if discard_tile_id not in tiles:
         return {
             "tile_id": discard_tile_id,
-            "tile_label": tile_label(discard_tile_id),
+            "tile_label": tile_label(discard_tile_id, game),
             "shanten": 8,
             "ukeire": 0,
             "waits": [],
@@ -3418,6 +4474,9 @@ def discard_profile(
             "defense_ev": -999.0,
             "table_ev": 0.0,
             "lookahead_ev": 0.0,
+            "alpha_search_ev": 0.0,
+            "alpha_search_depth": 0,
+            "alpha_search_label": "",
             "safety_ev": 0.0,
             "safety_score": 0.0,
             "safety_label": "非法",
@@ -3438,6 +4497,17 @@ def discard_profile(
             "push_fold_mode": "fold",
             "pressure_score": 0.0,
             "commitment_score": 0.0,
+            "deal_in_loss_ev": 0.0,
+            "deal_in_rate": 0.0,
+            "deal_in_points": 0,
+            "deal_in_label": "",
+            "safe_reserve_ev": 0.0,
+            "safe_reserve_score": 0.0,
+            "safe_reserve_label": "",
+            "global_reward_ev": 0.0,
+            "global_reward_label": "",
+            "win_rank_delta": 0,
+            "loss_rank_delta": 0,
             "defense_override_ev": 0.0,
             "defense_override_mode": "",
             "defense_override_label": "",
@@ -3463,7 +4533,9 @@ def discard_profile(
         risk_context = build_tile_risk_context(game, seat, hand_tiles=source_tiles)
     raw_risk = tile_risk_score(game, seat, discard_tile_id, risk_context=risk_context)
     risk = round(raw_risk * policy["risk_scale"], 3)
+    deal_in_profile = discard_deal_in_loss_profile(game, seat, discard_tile_id, risk_context=risk_context)
     defense_profile = defensive_discard_profile(game, seat, discard_tile_id, shanten_value, level, risk_context)
+    safe_reserve = safe_tile_reserve_profile(game, seat, tiles, discard_tile_id, shanten_value, risk_context)
     strategy = placement_strategy_context(game, seat)
     shape_profile = shape_quality_profile(game, seat, tiles, shanten_value, ukeire, good_tile_infos, level)
     bonus = tile_value_bonus(game, seat, discard_tile_id)
@@ -3476,6 +4548,19 @@ def discard_profile(
         routes=routes,
         wait_quality=shape_profile["wait_quality"],
     )
+    global_reward = global_reward_delta_profile(
+        game,
+        seat,
+        shanten_value=shanten_value,
+        ukeire=ukeire,
+        wait_quality=shape_profile["wait_quality"],
+        estimated_value=value_profile["estimated_value"],
+        estimated_han=value_profile["estimated_han"],
+        deal_in_rate=deal_in_profile["deal_in_rate"],
+        deal_in_points=deal_in_profile["deal_in_points"],
+        strategy=strategy,
+        level=level,
+    )
     ev = structured_discard_ev(
         game,
         seat,
@@ -3487,8 +4572,8 @@ def discard_profile(
         routes=routes,
         level=level,
     )
-    lookahead_ev = (
-        lookahead_after_discard_ev(
+    lookahead_profile = (
+        alpha_style_lookahead_profile(
             game,
             seat,
             tiles,
@@ -3498,8 +4583,14 @@ def discard_profile(
             risk_context=risk_context,
         )
         if include_lookahead and shanten_value <= 3
-        else 0.0
+        else {
+            "lookahead_ev": 0.0,
+            "alpha_search_ev": 0.0,
+            "alpha_search_depth": 0,
+            "alpha_search_label": "",
+        }
     )
+    lookahead_ev = float(lookahead_profile["lookahead_ev"])
     safety_ev = round(defense_profile["safety_ev"] * policy["defense_scale"], 3)
     hand_value_ev = round(value_profile["hand_value_ev"] * (0.45 + policy["strategy_scale"] * 0.55), 3)
     push_fold = push_fold_profile(
@@ -3533,6 +4624,9 @@ def discard_profile(
         defense_override["defense_override_ev"] * (0.52 + policy["defense_scale"] * 0.48),
         3,
     )
+    deal_in_loss_ev = round(deal_in_profile["deal_in_loss_ev"] * (0.52 + policy["defense_scale"] * 0.48), 3)
+    safe_reserve_ev = round(safe_reserve["safe_reserve_ev"] * (0.56 + policy["defense_scale"] * 0.44), 3)
+    global_reward_ev = round(global_reward["global_reward_ev"] * (0.48 + policy["strategy_scale"] * 0.52), 3)
     final_ev = round(
         ev["final_ev"]
         + lookahead_ev
@@ -3540,12 +4634,15 @@ def discard_profile(
         + shape_profile["shape_ev"]
         + hand_value_ev
         + push_fold_ev
+        + deal_in_loss_ev
+        + safe_reserve_ev
+        + global_reward_ev
         + defense_override_ev,
         3,
     )
     return {
         "tile_id": discard_tile_id,
-        "tile_label": tile_label(discard_tile_id),
+        "tile_label": tile_label(discard_tile_id, game),
         "shanten": shanten_value,
         "ukeire": ukeire,
         "waits": waits[:6],
@@ -3559,6 +4656,9 @@ def discard_profile(
         "defense_ev": ev["defense_ev"],
         "table_ev": ev["table_ev"],
         "lookahead_ev": lookahead_ev,
+        "alpha_search_ev": lookahead_profile["alpha_search_ev"],
+        "alpha_search_depth": lookahead_profile["alpha_search_depth"],
+        "alpha_search_label": lookahead_profile["alpha_search_label"],
         "safety_ev": safety_ev,
         "safety_score": defense_profile["safety_score"],
         "safety_label": defense_profile["safety_label"],
@@ -3579,6 +4679,17 @@ def discard_profile(
         "push_fold_mode": push_fold["push_fold_mode"],
         "pressure_score": push_fold["pressure_score"],
         "commitment_score": push_fold["commitment_score"],
+        "deal_in_loss_ev": deal_in_loss_ev,
+        "deal_in_rate": deal_in_profile["deal_in_rate"],
+        "deal_in_points": deal_in_profile["deal_in_points"],
+        "deal_in_label": deal_in_profile["deal_in_label"],
+        "safe_reserve_ev": safe_reserve_ev,
+        "safe_reserve_score": safe_reserve["safe_reserve_score"],
+        "safe_reserve_label": safe_reserve["safe_reserve_label"],
+        "global_reward_ev": global_reward_ev,
+        "global_reward_label": global_reward["global_reward_label"],
+        "win_rank_delta": global_reward["win_rank_delta"],
+        "loss_rank_delta": global_reward["loss_rank_delta"],
         "defense_override_ev": defense_override_ev,
         "defense_override_mode": defense_override["defense_override_mode"],
         "defense_override_label": defense_override["defense_override_label"],
@@ -3589,10 +4700,16 @@ def discard_profile(
     }
 
 
-def sorted_discard_profiles(game: dict[str, Any], seat: int, level: int) -> list[dict[str, Any]]:
-    candidates = unique_tile_type_candidates(game["round_state"]["hands"][seat])
+def sorted_discard_profiles(
+    game: dict[str, Any],
+    seat: int,
+    level: int,
+    *,
+    deep_search: bool = True,
+) -> list[dict[str, Any]]:
+    candidates = unique_tile_type_candidates(game["round_state"]["hands"][seat], game)
     risk_context = build_tile_risk_context(game, seat)
-    if level >= 3:
+    if level >= 3 and deep_search:
         base_profiles = [
             discard_profile(game, seat, tile_id, level, include_lookahead=False, risk_context=risk_context)
             for tile_id in candidates
@@ -3609,7 +4726,17 @@ def sorted_discard_profiles(game: dict[str, Any], seat: int, level: int) -> list
             for profile in base_profiles
         ]
     else:
-        profiles = [discard_profile(game, seat, tile_id, level, risk_context=risk_context) for tile_id in candidates]
+        profiles = [
+            discard_profile(
+                game,
+                seat,
+                tile_id,
+                level,
+                include_lookahead=deep_search,
+                risk_context=risk_context,
+            )
+            for tile_id in candidates
+        ]
     return sorted(profiles, key=lambda item: (-item["score"], item["tile_label"]))
 
 
@@ -3628,6 +4755,8 @@ def forced_defense_profile_choice(
     attack_shanten = int(attack_pick.get("shanten", 8))
     attack_han = float(attack_pick.get("estimated_han", 0.0))
     attack_wait_quality = float(attack_pick.get("wait_quality", 0.0))
+    attack_deal_in_rate = float(attack_pick.get("deal_in_rate", 0.0))
+    attack_deal_in_points = int(attack_pick.get("deal_in_points", 0))
 
     should_fold = False
     if attack_shanten >= 2 and max_pressure >= (1.05 if level >= 3 else 1.28):
@@ -3636,6 +4765,12 @@ def forced_defense_profile_choice(
         should_fold = True
     elif attack_shanten <= 0 and max_pressure >= 1.55 and (attack_han < 3 or attack_wait_quality < 0.48):
         should_fold = True
+    elif attack_deal_in_points >= 1300 and attack_shanten >= 2:
+        should_fold = True
+    elif attack_deal_in_points >= 1900 and attack_shanten == 1 and attack_han < 3:
+        should_fold = True
+    elif attack_deal_in_rate >= 0.16 and attack_han < 4 and attack_commitment < 1.1:
+        should_fold = True
 
     if not should_fold:
         return None
@@ -3643,8 +4778,15 @@ def forced_defense_profile_choice(
     safe_pool = [
         profile
         for profile in profiles
-        if float(profile.get("safety_score", 0.0)) >= 0.78
-        or (float(profile.get("risk", 99.0)) <= 0.45 and float(profile.get("safety_score", 0.0)) >= 0.56)
+        if (
+            float(profile.get("safety_score", 0.0)) >= 0.78
+            and int(profile.get("deal_in_points", 99999)) <= 1400
+        )
+        or (
+            float(profile.get("risk", 99.0)) <= 0.45
+            and float(profile.get("safety_score", 0.0)) >= 0.56
+            and int(profile.get("deal_in_points", 99999)) <= 900
+        )
     ]
     if not safe_pool:
         return None
@@ -3654,6 +4796,7 @@ def forced_defense_profile_choice(
         key=lambda item: (
             float(item.get("safety_score", 0.0)),
             -float(item.get("risk", 99.0)),
+            -int(item.get("deal_in_points", 99999)),
             float(item.get("defense_override_ev", 0.0)),
             float(item.get("score", -9999.0)),
         ),
@@ -3738,7 +4881,7 @@ def call_route_profile(game: dict[str, Any], seat: int, action: ActionChoice, co
         routes.append("对对和")
         bonus += 9.5
 
-    call_dora = sum(1 for tile_id in visible_call_tiles if is_red(tile_id) or tile_type(tile_id) in dora_types)
+    call_dora = sum(1 for tile_id in visible_call_tiles if is_red(tile_id, game) or tile_type(tile_id) in dora_types)
     if call_dora:
         routes.append("宝牌")
         bonus += min(10.0, call_dora * 3.2)
@@ -3797,9 +4940,18 @@ def confirm_open_call_tenpai_yaku(
         if result.error:
             continue
         yaku_names = serialize_yaku_names(result.yaku)
+        aka_han = active_aka_dora_han(
+            game,
+            scoring_tiles_from_layout(concealed_after_call, melds, win_tile_id, is_tsumo=False),
+        )
         confirmed_yaku.extend(name.split(" ", 1)[0] for name in yaku_names)
-        best_han = max(best_han, int(result.han or 0))
-        best_points = max(best_points, score_result_total(dict(result.cost)))
+        estimated_han = int(result.han or 0) + aka_han
+        best_han = max(best_han, estimated_han)
+        if aka_han:
+            cost = calculate_limit_hand_cost(game, seat, han=estimated_han, is_tsumo=False, honba=round_state["honba"])
+        else:
+            cost = dict(result.cost)
+        best_points = max(best_points, score_result_total(cost))
         confirmed_waits.append(tile_type_label(wait_type))
 
     return {
@@ -3967,7 +5119,7 @@ def best_post_call_discard_profile(
     concealed_after_call: list[int],
     level: int,
 ) -> dict[str, Any] | None:
-    candidates = unique_tile_type_candidates(concealed_after_call)
+    candidates = unique_tile_type_candidates(concealed_after_call, game)
     if not candidates:
         return None
     risk_context = build_tile_risk_context(game, seat, hand_tiles=concealed_after_call)
@@ -4141,7 +5293,7 @@ def can_riichi_after_discard(game: dict[str, Any], seat: int, discard_tile_id: i
         return False
     remaining = list(round_state["hands"][seat])
     remaining.remove(discard_tile_id)
-    return bool(tenpai_wait_tile_types(remaining, mode=game["mode"]))
+    return bool(tenpai_wait_tile_types(remaining, mode=game["mode"], melds_data=round_state["melds"][seat]))
 
 
 def can_double_riichi(round_state: dict[str, Any], seat: int) -> bool:
@@ -4159,7 +5311,7 @@ def build_discard_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]
                     f"discard|{drawn}",
                     "discard",
                     seat,
-                    f"摸切 {tile_label(drawn)}",
+                    f"摸切 {tile_label(drawn, game)}",
                     tile_id=drawn,
                     meta={"forced_tsumogiri": True},
                 )
@@ -4169,24 +5321,29 @@ def build_discard_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]
     actions: list[ActionChoice] = []
     seen: set[tuple[int, bool]] = set()
     riichi_seen_labels: set[str] = set()
-    for tile_id in sort_tiles(round_state["hands"][seat]):
-        key = (tile_type(tile_id), is_red(tile_id))
+    for tile_id in sort_tiles(round_state["hands"][seat], game):
+        key = (tile_type(tile_id), is_red(tile_id, game))
         if key in seen:
             continue
         seen.add(key)
         if tile_type(tile_id) in forbidden_types:
             continue
-        actions.append(ActionChoice(f"discard|{tile_id}", "discard", seat, f"打出 {tile_label(tile_id)}", tile_id=tile_id))
-        riichi_label_key = tile_label(tile_id)
+        actions.append(ActionChoice(f"discard|{tile_id}", "discard", seat, f"打出 {tile_label(tile_id, game)}", tile_id=tile_id))
+        riichi_label_key = tile_label(tile_id, game)
         if riichi_label_key not in riichi_seen_labels and can_riichi_after_discard(game, seat, tile_id):
             riichi_seen_labels.add(riichi_label_key)
-            actions.append(ActionChoice(f"riichi|{tile_id}", "riichi", seat, f"立直并打出 {tile_label(tile_id)}", tile_id=tile_id))
+            actions.append(ActionChoice(f"riichi|{tile_id}", "riichi", seat, f"立直并打出 {tile_label(tile_id, game)}", tile_id=tile_id))
     return actions
 
 
 def build_closed_kan_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]:
     round_state = game["round_state"]
-    if round_state["kan_count"] >= 4 or not round_state["rinshan_tiles"] or round_state["current_draw"] is None:
+    if (
+        round_state["kan_count"] >= 4
+        or not round_state["rinshan_tiles"]
+        or not round_state["live_wall"]
+        or round_state["current_draw"] is None
+    ):
         return []
     grouped = counts_by_type(round_state["hands"][seat])
     actions: list[ActionChoice] = []
@@ -4238,11 +5395,11 @@ def build_turn_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]:
     if drawn is not None and evaluate_hand(game, seat, drawn, is_tsumo=True) is not None:
         actions.append(ActionChoice("tsumo", "tsumo", seat, "自摸"))
     if game["mode"] == "3P" and not round_state["kita_blocked"][seat]:
-        for tile_id in sort_tiles(round_state["hands"][seat]):
+        for tile_id in sort_tiles(round_state["hands"][seat], game):
             if tile_type(tile_id) == 30:
-                if round_state["riichi"][seat]:
-                    break
-                actions.append(ActionChoice(f"kita|{tile_id}", "kita", seat, f"拔北 {tile_label(tile_id)}", tile_id=tile_id))
+                if round_state["riichi"][seat] and tile_id != drawn:
+                    continue
+                actions.append(ActionChoice(f"kita|{tile_id}", "kita", seat, f"拔北 {tile_label(tile_id, game)}", tile_id=tile_id))
                 break
     actions.extend(build_closed_kan_actions(game, seat))
     actions.extend(build_discard_actions(game, seat))
@@ -4260,7 +5417,7 @@ def forced_riichi_tsumogiri_action(game: dict[str, Any], seat: int, actions: lis
     discard_choices = [action for action in choices if action.type == "discard" and action.tile_id == drawn]
     if not discard_choices:
         return None
-    if any(action.type in {"tsumo", "closed_kan"} for action in choices):
+    if any(action.type in {"tsumo", "closed_kan", "kita"} for action in choices):
         return None
     return discard_choices[0]
 
@@ -4298,8 +5455,10 @@ def build_reaction_actions(game: dict[str, Any], seat: int) -> list[ActionChoice
     actions: list[ActionChoice] = []
     can_ron, ron_result = can_ron_on_last_discard(game, seat)
     if can_ron and not is_head_bump_blocked(game, seat):
-        actions.append(ActionChoice("ron", "ron", seat, f"荣和 {tile_label(discard_tile)}", tile_id=discard_tile))
+        actions.append(ActionChoice("ron", "ron", seat, f"荣和 {tile_label(discard_tile, game)}", tile_id=discard_tile))
     if discard.get("source") in {"kan", "kita"}:
+        return [action for action in actions if action.type == "ron"]
+    if not round_state["live_wall"] and round_state["last_draw_source"][discard["seat"]] == "wall":
         return [action for action in actions if action.type == "ron"]
     if round_state["riichi"][seat]:
         return actions
@@ -4332,7 +5491,7 @@ def build_reaction_actions(game: dict[str, Any], seat: int) -> list[ActionChoice
         )
     if game["mode"] == "4P" and seat == next_seat(discard["seat"], round_state["player_count"]) and not is_honor(discard_type):
         for consumed in chi_candidates(round_state["hands"][seat], discard_tile):
-            labels = " ".join(tile_label(tile) for tile in sort_tiles(consumed + [discard_tile]))
+            labels = " ".join(tile_label(tile, game) for tile in sort_tiles(consumed + [discard_tile], game))
             if legal_post_call_discards(game, seat, "chi", discard_tile, consumed):
                 actions.append(
                     ActionChoice(
@@ -4360,18 +5519,18 @@ def build_player_summary(game: dict[str, Any], seat: int, reveal: bool) -> dict[
         "riichi": round_state["riichi"][seat],
         "seat_wind": seat_wind_label(round_state, seat),
         "hand_size": len(round_state["hands"][seat]),
-        "hand": copy_public_tiles(round_state["hands"][seat], reveal),
+        "hand": copy_public_tiles(game, round_state["hands"][seat], reveal),
         "melds": [
             {
                 "type": meld["type"],
                 "opened": meld["opened"],
-                "tiles": [tile_label(tile) for tile in meld["tiles"]],
+                "tiles": [tile_label(tile, game) for tile in meld["tiles"]],
                 "from_seat": meld.get("from_seat"),
             }
             for meld in round_state["melds"][seat]
         ],
         "discards": [
-            {"tile": tile_label(item["tile"]), "riichi": item.get("riichi", False), "called": item.get("called", False)}
+            {"tile": tile_label(item["tile"], game), "riichi": item.get("riichi", False), "called": item.get("called", False)}
             for item in round_state["discards"][seat]
         ],
         "nuki_count": round_state["nuki_count"][seat],
@@ -4393,6 +5552,7 @@ def turn_special_action_profile(game: dict[str, Any], seat: int, action: ActionC
     progress = round_progress_ratio(round_state)
     pressure = opponent_models(game, seat)
     max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
     max_loss = max((model["estimated_loss"] for model in pressure), default=0)
 
     if action.type == "tsumo":
@@ -4417,7 +5577,7 @@ def turn_special_action_profile(game: dict[str, Any], seat: int, action: ActionC
     if action.type == "abortive_draw":
         speed_ev = 18.0 if current_shanten >= 5 else 6.0
         value_ev = 0.0
-        defense_ev = 18.0 + max_threat * 6.0
+        defense_ev = 18.0 + max_threat * 4.0 + max_push_pressure * 4.5
         table_ev = 3.0 if strategy["placement"] == 1 else 0.0
         final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
         threshold = 26.0 if current_shanten >= 5 else 36.0
@@ -4443,10 +5603,10 @@ def turn_special_action_profile(game: dict[str, Any], seat: int, action: ActionC
     if action.type == "kita":
         value_ev = 18.0
         speed_ev = 7.5
-        defense_ev = -(max_threat * (2.0 + progress * 3.0))
+        defense_ev = -(max_threat * (1.5 + progress * 2.5) + max_push_pressure * (1.4 + progress * 2.4))
         table_ev = 3.0 + strategy["value_bias"] * 6.0
         final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
-        threshold = 8.0 + max_threat * 2.5
+        threshold = 8.0 + max(max_threat, max_push_pressure * 0.72) * 2.5
         return {
             "action": action,
             "current_shanten": current_shanten,
@@ -4475,15 +5635,16 @@ def turn_special_action_profile(game: dict[str, Any], seat: int, action: ActionC
             value_ev += 5.0
         if round_state["riichi"][seat]:
             value_ev += 2.5
-        defense_ev = -(6.0 + max_threat * (8.0 + progress * 10.0) + min(8.0, max_loss / 3900))
+        effective_threat = max(max_threat, max_push_pressure * 0.74)
+        defense_ev = -(6.0 + effective_threat * (8.0 + progress * 10.0) + min(8.0, max_loss / 3900))
         if action.type == "added_kan":
-            defense_ev -= 3.5 + max_threat * 3.0
+            defense_ev -= 3.5 + effective_threat * 3.0
         if current_shanten <= 1:
             defense_ev *= 0.72
         table_ev = (strategy["value_bias"] * 7.0 + strategy["attack_bias"] * 4.0 - strategy["defense_bias"] * 9.0)
         final_ev = round(speed_ev + value_ev + defense_ev + table_ev, 3)
         threshold = 12.0 if action.type == "closed_kan" else 16.0
-        threshold += max_threat * 4.0 + progress * 4.0 + strategy["defense_bias"] * 6.0
+        threshold += effective_threat * 4.0 + progress * 4.0 + strategy["defense_bias"] * 6.0
         recommended = bool(policy["closed_kan"]) and final_ev >= threshold
         kan_name = "暗杠" if action.type == "closed_kan" else "加杠"
         routes = [kan_name, "岭上补牌", "增加宝牌"]
@@ -4533,6 +5694,7 @@ def pass_action_profile_for_hint(game: dict[str, Any], seat: int, action: Action
     progress = round_progress_ratio(round_state)
     pressure = opponent_models(game, seat)
     max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
     reactions = build_reaction_actions(game, seat)
 
     if any(choice.type == "ron" for choice in reactions):
@@ -4564,7 +5726,7 @@ def pass_action_profile_for_hint(game: dict[str, Any], seat: int, action: Action
 
     speed_ev = 4.0 if current_shanten <= 2 else 8.0
     value_ev = 4.0 if current_shanten <= 1 else 7.0
-    defense_ev = 6.0 + max_threat * (5.0 + progress * 5.0)
+    defense_ev = 6.0 + max_threat * (4.0 + progress * 4.0) + max_push_pressure * (4.0 + progress * 5.0)
     table_ev = strategy["defense_bias"] * 7.0 - strategy["call_bias"] * 4.0
     post_discard_ev = 0.0
     routes = ["\u4fdd\u6301\u95e8\u6e05", "\u8df3\u8fc7\u9e23\u724c"]
@@ -4655,7 +5817,7 @@ def special_action_profile_for_hint(game: dict[str, Any], seat: int, action: Act
     return turn_special_action_profile(game, seat, action, level)
 
 
-def serialize_special_action_hint(profile: dict[str, Any]) -> dict[str, Any]:
+def serialize_special_action_hint(game: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
     action: ActionChoice = profile["action"]
     best_discard = profile.get("best_discard")
     best_discard_tile = best_discard.get("tile_label") if isinstance(best_discard, dict) else None
@@ -4663,7 +5825,7 @@ def serialize_special_action_hint(profile: dict[str, Any]) -> dict[str, Any]:
         "id": action.action_id,
         "type": action.type,
         "label": action.label,
-        "tile": tile_label(action.tile_id) if action.tile_id is not None else None,
+        "tile": tile_label(action.tile_id, game) if action.tile_id is not None else None,
         "current_shanten": profile.get("current_shanten"),
         "next_shanten": profile.get("next_shanten"),
         "routes": profile.get("routes", []),
@@ -4676,6 +5838,12 @@ def serialize_special_action_hint(profile: dict[str, Any]) -> dict[str, Any]:
         "call_commitment_label": profile.get("call_commitment_label", ""),
         "call_commitment_reason": profile.get("call_commitment_reason", ""),
         "call_commitment_blocker": profile.get("call_commitment_blocker"),
+        "alpha_action_ev": profile.get("alpha_action_ev"),
+        "alpha_action_search_ev": profile.get("alpha_action_search_ev"),
+        "alpha_action_label": profile.get("alpha_action_label", ""),
+        "alpha_action_depth": profile.get("alpha_action_depth"),
+        "global_reward_ev": profile.get("global_reward_ev"),
+        "global_reward_label": profile.get("global_reward_label", ""),
         "final_ev": profile.get("final_ev", 0.0),
         "threshold": profile.get("threshold", 0.0),
         "recommended": bool(profile.get("recommended", False)),
@@ -4702,7 +5870,7 @@ def special_action_hints(game: dict[str, Any], seat: int, level: int) -> list[di
 
     profiles = [special_action_profile_for_hint(game, seat, action, level) for action in actions]
     return [
-        serialize_special_action_hint(profile)
+        serialize_special_action_hint(game, profile)
         for profile in sorted(
             profiles,
             key=lambda item: (
@@ -4714,7 +5882,7 @@ def special_action_hints(game: dict[str, Any], seat: int, level: int) -> list[di
     ]
 
 
-def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
+def build_hint_block(game: dict[str, Any], *, deep_search: bool = False) -> dict[str, Any] | None:
     round_state = game["round_state"]
     seat = game["human_seat"]
     level = 3
@@ -4724,7 +5892,9 @@ def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     shanten_value = hint_shanten_value(game, seat)
-    profiles = sorted_discard_profiles(game, seat, level)[:3] if is_human_turn else []
+    # 实时行动提示必须轻量：深度前瞻会在每次 public_state 刷新时触发，
+    # 容易把一次出牌拖到数秒。深度搜索留给 AI 决策/后续按需分析。
+    profiles = sorted_discard_profiles(game, seat, level, deep_search=deep_search)[:3] if is_human_turn else []
     risk_context = build_tile_risk_context(game, seat)
     return {
         "shanten": shanten_value,
@@ -4742,6 +5912,9 @@ def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
                 "defense_ev": item["defense_ev"],
                 "table_ev": item["table_ev"],
                 "lookahead_ev": item["lookahead_ev"],
+                "alpha_search_ev": item.get("alpha_search_ev", 0.0),
+                "alpha_search_depth": item.get("alpha_search_depth", 0),
+                "alpha_search_label": item.get("alpha_search_label", ""),
                 "safety_ev": item["safety_ev"],
                 "safety_score": item["safety_score"],
                 "safety_label": item["safety_label"],
@@ -4762,6 +5935,17 @@ def build_hint_block(game: dict[str, Any]) -> dict[str, Any] | None:
                 "push_fold_mode": item["push_fold_mode"],
                 "pressure_score": item["pressure_score"],
                 "commitment_score": item["commitment_score"],
+                "deal_in_loss_ev": item.get("deal_in_loss_ev", 0.0),
+                "deal_in_rate": item.get("deal_in_rate", 0.0),
+                "deal_in_points": item.get("deal_in_points", 0),
+                "deal_in_label": item.get("deal_in_label", ""),
+                "safe_reserve_ev": item.get("safe_reserve_ev", 0.0),
+                "safe_reserve_score": item.get("safe_reserve_score", 0.0),
+                "safe_reserve_label": item.get("safe_reserve_label", ""),
+                "global_reward_ev": item.get("global_reward_ev", 0.0),
+                "global_reward_label": item.get("global_reward_label", ""),
+                "win_rank_delta": item.get("win_rank_delta", 0),
+                "loss_rank_delta": item.get("loss_rank_delta", 0),
                 "defense_override_ev": item["defense_override_ev"],
                 "defense_override_mode": item["defense_override_mode"],
                 "defense_override_label": item["defense_override_label"],
@@ -4792,7 +5976,7 @@ def legal_actions_for_human(game: dict[str, Any]) -> list[ActionChoice]:
     return []
 
 
-def build_public_state(game: dict[str, Any]) -> dict[str, Any]:
+def build_public_state(game: dict[str, Any], *, include_hint: bool = True) -> dict[str, Any]:
     ensure_game_defaults(game)
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
@@ -4810,7 +5994,7 @@ def build_public_state(game: dict[str, Any]) -> dict[str, Any]:
         if discard is not None and discard.get("source") == "kan":
             prompt = f"请响应 {game['players'][discard['seat']]['name']} 的{KAN_DETAIL_LABELS.get(discard.get('kan_type', ''), '杠')}。"
         else:
-            prompt = f"请响应 {game['players'][discard['seat']]['name']} 打出的 {tile_label(discard['tile'])}。"
+            prompt = f"请响应 {game['players'][discard['seat']]['name']} 打出的 {tile_label(discard['tile'], game)}。"
     elif round_state["turn_seat"] == game["human_seat"]:
         prompt = "轮到你行动。"
     else:
@@ -4822,6 +6006,8 @@ def build_public_state(game: dict[str, Any]) -> dict[str, Any]:
         "round_length": game["round_length"],
         "rule_profile": rule_profile(game),
         "koyaku_enabled": bool(game.get("koyaku_enabled", False)),
+        "minimum_han": minimum_han(game),
+        "aka_dora_count": aka_dora_count(game),
         "sanma_scoring_mode": sanma_scoring_mode(game),
         "round_label": round_label(round_state["prevalent_wind"], round_state["hand_number"], round_state["honba"]),
         "phase": round_state["phase"],
@@ -4832,18 +6018,25 @@ def build_public_state(game: dict[str, Any]) -> dict[str, Any]:
         "riichi_sticks": round_state["riichi_sticks"],
         "honba": round_state["honba"],
         "players": players,
-        "human_hand": copy_public_tiles(round_state["hands"][game["human_seat"]], True),
-        "dora_indicators": [tile_label(tile) for tile in current_dora_indicators(round_state)],
+        "human_hand": copy_public_tiles(game, round_state["hands"][game["human_seat"]], True),
+        "dora_indicators": [tile_label(tile, game) for tile in current_dora_indicators(round_state)],
         "last_discard": None
         if round_state["last_discard"] is None
-        else {"seat": round_state["last_discard"]["seat"], "tile": tile_label(round_state["last_discard"]["tile"])},
+        else {"seat": round_state["last_discard"]["seat"], "tile": tile_label(round_state["last_discard"]["tile"], game)},
         "legal_actions": [action.to_dict() for action in legal_actions_for_human(game)],
         "prompt": prompt,
         "log_tail": game["action_log"][-settings.replay_tail_limit :],
         "replay_steps": len(game["snapshots"]),
         "round_result": deepcopy(round_state["round_result"]),
-        "hint": build_hint_block(game),
+        "hint": build_hint_block(game, deep_search=False) if include_hint else None,
     }
+
+
+def replay_snapshot_state(public_state: dict[str, Any]) -> dict[str, Any]:
+    snapshot = deepcopy(public_state)
+    # 回放只需要牌桌状态；AI 提示很重，放进每一帧会让 /replay 载荷暴涨。
+    snapshot["hint"] = None
+    return snapshot
 
 
 def record_action(game: dict[str, Any], seat: int, action_type: str, *, tile_id: int | None = None, details: str = "") -> None:
@@ -4854,21 +6047,22 @@ def record_action(game: dict[str, Any], seat: int, action_type: str, *, tile_id:
         "seat": seat,
         "actor": "SYSTEM" if seat < 0 else game["players"][seat]["name"],
         "type": action_type,
-        "tile": tile_label(tile_id) if tile_id is not None else "",
+        "tile": tile_label(tile_id, game) if tile_id is not None else "",
         "details": details,
         "timestamp": now_iso(),
         "state_hash": state_hash(round_state),
     }
     game["action_log"].append(entry)
-    game["public_state"] = build_public_state(game)
-    game["snapshots"].append({"seq": entry["seq"], "type": action_type, "round": entry["round"], "state": deepcopy(game["public_state"])})
+    game["public_state"] = build_public_state(game, include_hint=False)
+    game["snapshots"].append({"seq": entry["seq"], "type": action_type, "round": entry["round"], "state": replay_snapshot_state(game["public_state"])})
 
 
 def build_round(game: dict[str, Any]) -> dict[str, Any]:
     ensure_game_defaults(game)
     count = player_count(game["mode"])
     round_cursor = game["round_cursor"]
-    prevalent = "E" if round_cursor < count else "S"
+    wind_order = ["E", "S", "W", "N"]
+    prevalent = wind_order[min(round_cursor // count, len(wind_order) - 1)]
     hand_number = round_cursor % count + 1
     dealer = round_cursor % count
     seed = stable_seed(game["seed"], round_cursor, game["honba"], game["riichi_sticks"])
@@ -4940,6 +6134,8 @@ def new_game(
     enable_koyaku: bool = False,
     sanma_scoring: str = "TSUMO_LOSS",
     rule_profile_name: str = "RANKED",
+    minimum_han: int = 1,
+    aka_dora_count: int | None = None,
 ) -> dict[str, Any]:
     count = player_count(mode)
     ai_levels = (ai_levels + [2] * count)[: count - 1]
@@ -4965,6 +6161,8 @@ def new_game(
         "round_length": round_length,
         "rule_profile": rule_profile_name if rule_profile_name in RULE_PROFILES else "RANKED",
         "koyaku_enabled": bool(enable_koyaku),
+        "minimum_han": minimum_han if minimum_han in MINIMUM_HAN_OPTIONS else 1,
+        "aka_dora_count": default_aka_dora_count(mode) if aka_dora_count is None else aka_dora_count,
         "sanma_scoring_mode": sanma_scoring if mode == "3P" and sanma_scoring in SANMA_SCORING_MODES else "TSUMO_LOSS",
         "seed": seed,
         "status": "RUNNING",
@@ -5095,7 +6293,9 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
 
     pressure = opponent_models(game, seat)
     max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
     max_loss = max((model["estimated_loss"] for model in pressure), default=0)
+    effective_threat = max(max_threat, max_push_pressure * 0.72)
     call_commitment = open_call_commitment_profile(
         game,
         seat,
@@ -5105,19 +6305,25 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
         shanten_gain=shanten_gain,
         yaku_profile=yaku_profile,
         best_discard=best_discard,
-        max_threat=max_threat,
+        max_threat=effective_threat,
         max_loss=max_loss,
         progress=progress,
         strategy=strategy,
         level=level,
     )
-    defense_ev = -(max_threat * (8.0 + progress * 12.0))
+    alpha_action = alpha_open_call_projection_profile(game, seat, new_concealed, best_discard, level, yaku_profile)
+    global_reward_ev = 0.0
+    global_reward_label = ""
+    if isinstance(best_discard, dict):
+        global_reward_ev = round(float(best_discard.get("global_reward_ev", 0.0)) * (0.42 + strategy_scale * 0.18), 3)
+        global_reward_label = str(best_discard.get("global_reward_label", ""))
+    defense_ev = -(effective_threat * (8.0 + progress * 12.0))
     defense_ev -= min(12.0, max_loss / 2600) * (0.25 + progress * 0.55)
     if action.type == "open_kan":
-        defense_ev -= 8.0 + max_threat * 8.0
+        defense_ev -= 8.0 + effective_threat * 8.0
     if next_shanten <= 1:
         defense_ev *= 0.72
-    defense_ev -= strategy["defense_bias"] * (5.5 + max_threat * 7.0) * strategy_scale
+    defense_ev -= strategy["defense_bias"] * (5.5 + effective_threat * 7.0) * strategy_scale
 
     own_points = game["players"][seat]["points"]
     top_points = max(player["points"] for player in game["players"])
@@ -5131,7 +6337,14 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
     table_ev += (strategy["attack_bias"] * 7.0 + strategy["call_bias"] * 9.0 - strategy["defense_bias"] * 8.0) * strategy_scale
 
     final_ev = round(
-        speed_ev + value_ev + defense_ev + table_ev + post_discard_ev + call_commitment["call_commitment_ev"],
+        speed_ev
+        + value_ev
+        + defense_ev
+        + table_ev
+        + post_discard_ev
+        + call_commitment["call_commitment_ev"]
+        + alpha_action["alpha_action_ev"]
+        + global_reward_ev,
         3,
     )
     threshold = open_call_threshold(level, action.type, next_shanten)
@@ -5167,6 +6380,12 @@ def open_call_profile(game: dict[str, Any], seat: int, action: ActionChoice, lev
         "call_commitment_label": call_commitment["call_commitment_label"],
         "call_commitment_reason": call_commitment["call_commitment_reason"],
         "call_commitment_blocker": call_commitment["call_commitment_blocker"],
+        "alpha_action_ev": alpha_action["alpha_action_ev"],
+        "alpha_action_search_ev": alpha_action["alpha_action_search_ev"],
+        "alpha_action_label": alpha_action["alpha_action_label"],
+        "alpha_action_depth": alpha_action["alpha_action_depth"],
+        "global_reward_ev": global_reward_ev,
+        "global_reward_label": global_reward_label,
         "final_ev": final_ev,
         "threshold": round(threshold, 3),
         "should_call": should_call,
@@ -5204,6 +6423,7 @@ def riichi_decision_profile(
     top_points = max(player["points"] for player in game["players"])
     pressure = opponent_models(game, seat)
     max_threat = max((model["threat"] for model in pressure), default=0.0)
+    max_push_pressure = max((model.get("push_pressure", model["threat"]) for model in pressure), default=0.0)
     max_loss = max((model["estimated_loss"] for model in pressure), default=0)
     strategy = placement_strategy_context(game, seat)
     strategy_scale = policy["strategy_scale"]
@@ -5219,7 +6439,8 @@ def riichi_decision_profile(
         value_ev += 7.5
 
     defense_ev = -(risk * (7.5 + progress * 11.0))
-    defense_ev -= max_threat * (4.0 + progress * 8.0)
+    defense_ev -= max_threat * (3.5 + progress * 6.5)
+    defense_ev -= max_push_pressure * (2.5 + progress * 5.5)
     defense_ev -= min(7.0, max_loss / 4200) * progress
     defense_ev -= strategy["defense_bias"] * (6.0 + risk * 5.0) * strategy_scale
     if ukeire <= 2:
@@ -5237,7 +6458,21 @@ def riichi_decision_profile(
     if game["players"][seat]["points"] < 1000:
         deposit_ev = -999.0
 
-    final_ev = round(speed_ev + value_ev + defense_ev + table_ev + deposit_ev, 3)
+    remaining_after_riichi = list(round_state["hands"][seat])
+    discard_tile_id = action.tile_id if action.tile_id is not None else discard_profile_item.get("tile_id")
+    if discard_tile_id in remaining_after_riichi:
+        remaining_after_riichi.remove(discard_tile_id)
+    alpha_action = alpha_riichi_projection_profile(game, seat, remaining_after_riichi, discard_profile_item, level)
+    global_reward_ev = round(
+        float(discard_profile_item.get("global_reward_ev", 0.0)) * (0.48 + strategy_scale * 0.16),
+        3,
+    )
+    global_reward_label = str(discard_profile_item.get("global_reward_label", ""))
+
+    final_ev = round(
+        speed_ev + value_ev + defense_ev + table_ev + deposit_ev + alpha_action["alpha_action_ev"] + global_reward_ev,
+        3,
+    )
     threshold = 30.0 if level == 1 else 22.0 if level == 2 else 13.0
     threshold += policy["riichi_threshold_shift"]
     if top_points - own_points >= 8000:
@@ -5264,6 +6499,12 @@ def riichi_decision_profile(
         "value_ev": round(value_ev, 3),
         "defense_ev": round(defense_ev, 3),
         "table_ev": round(table_ev + deposit_ev, 3),
+        "alpha_action_ev": alpha_action["alpha_action_ev"],
+        "alpha_action_search_ev": alpha_action["alpha_action_search_ev"],
+        "alpha_action_label": alpha_action["alpha_action_label"],
+        "alpha_action_depth": alpha_action["alpha_action_depth"],
+        "global_reward_ev": global_reward_ev,
+        "global_reward_label": global_reward_label,
         "final_ev": final_ev,
         "threshold": round(threshold, 3),
         "should_riichi": final_ev >= threshold,
@@ -5290,10 +6531,35 @@ def choose_ai_turn_action(game: dict[str, Any], seat: int) -> tuple[ActionChoice
         if (level == 1 and shanten_value >= 4) or (level >= 2 and shanten_value >= 5):
             return abortive_draw_action, "起手幺九牌过多，选择九种九牌流局。"
     if game["mode"] == "3P":
+        kita_profiles = [
+            turn_special_action_profile(game, seat, action, level)
+            for action in actions
+            if action.type == "kita"
+        ]
+        if kita_profiles:
+            best_kita_profile = max(kita_profiles, key=lambda item: item["final_ev"])
+            if best_kita_profile["recommended"]:
+                return (
+                    best_kita_profile["action"],
+                    f"拔北EV {best_kita_profile['final_ev']} 达标 | 局况 {best_kita_profile['strategy_label']} | 选择拔北。",
+                )
+    kan_profiles = [
+        turn_special_action_profile(game, seat, action, level)
+        for action in actions
+        if action.type in {"closed_kan", "added_kan"}
+    ]
+    if kan_profiles:
+        best_kan_profile = max(kan_profiles, key=lambda item: item["final_ev"])
+        if best_kan_profile["recommended"]:
+            return (
+                best_kan_profile["action"],
+                f"杠牌EV {best_kan_profile['final_ev']} 达标 | 阈值 {best_kan_profile['threshold']} | 局况 {best_kan_profile['strategy_label']} | 选择{best_kan_profile['action'].label}。",
+            )
+    if False and game["mode"] == "3P":
         for action in actions:
             if action.type == "kita":
                 return action, "北牌可转为拔北宝牌。"
-    if policy["closed_kan"]:
+    if False and policy["closed_kan"]:
         for action in actions:
             if action.type == "closed_kan":
                 return action, "局面安全，选择暗杠增加打点。"
@@ -5323,19 +6589,20 @@ def choose_ai_turn_action(game: dict[str, Any], seat: int) -> tuple[ActionChoice
                 f"立直EV {best_riichi_profile['final_ev']} 达标，局况 {best_riichi_profile['strategy_label']}，进张 {profile['ukeire']}，选择立直。",
             )
     discard_actions = [action for action in actions if action.type == "discard"]
-    profiles = sorted_discard_profiles(game, seat, level)
-    profile_lookup = {(tile_type(profile["tile_id"]), is_red(profile["tile_id"])): profile for profile in profiles}
+    profiles = sorted_discard_profiles(game, seat, level, deep_search=False)
+    profile_lookup = {(tile_type(profile["tile_id"]), is_red(profile["tile_id"], game)): profile for profile in profiles}
     action_profiles = [
-        profile_lookup[(tile_type(action.tile_id or 0), is_red(action.tile_id or 0))]
+        profile_lookup[(tile_type(action.tile_id or 0), is_red(action.tile_id or 0, game))]
         for action in discard_actions
     ]
     chosen_profile = choose_profile_with_ai_policy(game, seat, action_profiles, level)
+    chosen_key = (tile_type(chosen_profile["tile_id"]), is_red(chosen_profile["tile_id"], game))
     chosen_discard = next(
         action
         for action in discard_actions
-        if (tile_type(action.tile_id or 0), is_red(action.tile_id or 0)) == (tile_type(chosen_profile["tile_id"]), is_red(chosen_profile["tile_id"]))
+        if (tile_type(action.tile_id or 0), is_red(action.tile_id or 0, game)) == chosen_key
     )
-    profile = profile_lookup[(tile_type(chosen_discard.tile_id or 0), is_red(chosen_discard.tile_id or 0))]
+    profile = profile_lookup[(tile_type(chosen_discard.tile_id or 0), is_red(chosen_discard.tile_id or 0, game))]
     route_text = "/".join(profile["routes"]) if profile["routes"] else "牌效"
     best_profile = max(action_profiles, key=lambda item: item["score"])
     defense_note = f" | {profile['push_fold_label']}" if profile.get("forced_defense") else ""
@@ -5438,6 +6705,7 @@ def draw_from_rinshan(game: dict[str, Any], seat: int, details: str) -> None:
 def rotate_turn(game: dict[str, Any]) -> None:
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
+    flush_pending_kan_dora(round_state)
     round_state["last_discard"] = None
     round_state["pending_abortive_draw"] = None
     round_state["reaction_passed"] = [False] * round_state["player_count"]
@@ -5448,7 +6716,6 @@ def rotate_turn(game: dict[str, Any]) -> None:
 def apply_discard(game: dict[str, Any], seat: int, tile_id: int, *, declare_riichi: bool = False) -> None:
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
-    flush_pending_kan_dora(round_state)
     declare_double_riichi = declare_riichi and can_double_riichi(round_state, seat)
     round_state["hands"][seat].remove(tile_id)
     round_state["hands"][seat] = sort_tiles(round_state["hands"][seat])
@@ -5470,7 +6737,11 @@ def apply_discard(game: dict[str, Any], seat: int, tile_id: int, *, declare_riic
         round_state["ippatsu"][seat] = True
         record_action(game, seat, "RIICHI", tile_id=tile_id, details="宣告两立直" if declare_double_riichi else "宣告立直")
     record_action(game, seat, "DISCARD", tile_id=tile_id, details="打出手牌")
-    round_state["pending_abortive_draw"] = evaluate_pending_abortive_draw_after_discard(game)
+    pending_abortive_draw = round_state.get("pending_abortive_draw")
+    if isinstance(pending_abortive_draw, dict) and pending_abortive_draw.get("kind") == "SUUKAIKAN":
+        round_state["pending_abortive_draw"] = pending_abortive_draw
+    else:
+        round_state["pending_abortive_draw"] = evaluate_pending_abortive_draw_after_discard(game)
 
 
 def perform_call(
@@ -5483,8 +6754,7 @@ def perform_call(
 ) -> None:
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
-    if action_type in {"open_kan", "closed_kan", "added_kan"}:
-        flush_pending_kan_dora(round_state)
+    flush_pending_kan_dora(round_state)
     if action_type in {"closed_kan", "added_kan"}:
         begin_kan_reaction(game, seat, action_type, discard_tile_id, consumed_ids, meld_index=meld_index)
         return
@@ -5529,10 +6799,9 @@ def perform_call(
         round_state["kan_count"] += 1
         apply_kan_dora_timing(round_state, action_type)
         record_action(game, seat, "KAN", tile_id=discard_tile_id, details=KAN_DETAIL_LABELS[action_type])
-        if should_abort_for_four_kans(round_state):
-            settle_abortive_draw(game, "SUUKAIKAN")
-            return
         draw_from_rinshan(game, seat, "岭上摸牌")
+        if should_abort_for_four_kans(round_state):
+            round_state["pending_abortive_draw"] = four_kan_abortive_draw_payload()
     else:
         record_action(game, seat, action_type.upper(), tile_id=discard_tile_id, details={"chi": "吃牌", "pon": "碰牌"}[action_type])
 
@@ -5770,29 +7039,17 @@ def settle_nagashi_mangan(game: dict[str, Any], winners: list[int]) -> None:
         )
     for idx, delta in enumerate(score_changes):
         game["players"][idx]["points"] += delta
-    if ordered:
-        score_changes[ordered[0]] += round_state["riichi_sticks"] * 1000
-        if winner_details:
-            append_payment_detail(
-                game,
-                winner_details[0]["payments"],
-                from_seat=None,
-                amount=round_state["riichi_sticks"] * 1000,
-                kind="riichi_bonus",
-            )
-            game["players"][ordered[0]]["points"] += round_state["riichi_sticks"] * 1000
     for detail in winner_details:
         detail["amount"] += score_changes[detail["seat"]]
 
     tenpai = calculate_tenpai_seats(game)
     dealer_continues = round_state["dealer_seat"] in tenpai
     game["honba"] += 1
-    game["riichi_sticks"] = 0
+    game["riichi_sticks"] = round_state["riichi_sticks"]
     round_state["pending_abortive_draw"] = None
     round_state["pending_kan"] = None
     round_state["pending_kita"] = None
     round_state["pending_dora_reveals"] = 0
-    round_state["riichi_sticks"] = 0
     round_state["round_result"] = {
         "kind": "DRAW",
         "subtype": "NAGASHI_MANGAN",
@@ -5829,6 +7086,7 @@ def settle_exhaustive_draw(game: dict[str, Any]) -> None:
         game["players"][idx]["points"] += delta
     dealer_continues = round_state["dealer_seat"] in tenpai
     game["honba"] += 1
+    game["riichi_sticks"] = round_state["riichi_sticks"]
     round_state["pending_abortive_draw"] = None
     round_state["pending_kan"] = None
     round_state["pending_kita"] = None
@@ -5870,7 +7128,7 @@ def finalize_round(game: dict[str, Any], *, dealer_continues: bool) -> None:
         return
 
     if in_extra_round:
-        if is_win_like_round_result(game) and goal_score_reached(game):
+        if goal_score_reached(game):
             finish_game(game)
         return
 
@@ -6018,11 +7276,34 @@ def current_legal_action_ids(game: dict[str, Any], seat: int) -> set[str]:
     return set()
 
 
+def normalize_equivalent_turn_action_id(game: dict[str, Any], seat: int, action_id: str) -> str:
+    round_state = game["round_state"]
+    if round_state["phase"] != "DISCARD" or round_state["turn_seat"] != seat:
+        return action_id
+
+    action_type, parts = parse_action_id(action_id)
+    if action_type not in {"discard", "riichi", "kita"} or not parts:
+        return action_id
+    try:
+        requested_tile = int(parts[0])
+    except ValueError:
+        return action_id
+
+    requested_key = (tile_type(requested_tile), is_red(requested_tile, game))
+    for action in build_turn_actions(game, seat):
+        if action.type != action_type or action.tile_id is None:
+            continue
+        if (tile_type(action.tile_id), is_red(action.tile_id, game)) == requested_key:
+            return action.action_id
+    return action_id
+
+
 def execute_action(
     game: dict[str, Any], action_id: str, *, actor_seat: int | None = None, advance: bool = True
 ) -> dict[str, Any]:
     ensure_game_defaults(game)
     seat = actor_seat if actor_seat is not None else game["human_seat"]
+    action_id = normalize_equivalent_turn_action_id(game, seat, action_id)
     legal_ids = current_legal_action_ids(game, seat)
     if action_id not in legal_ids:
         if seat == game["human_seat"]:
@@ -6040,7 +7321,7 @@ def execute_action(
         had_ron = any(action.type == "ron" for action in build_reaction_actions(game, seat))
         round_state["reaction_passed"][seat] = True
         if had_ron:
-            if not is_kita_north_exception(round_state, round_state.get("last_discard")):
+            if round_state.get("last_discard", {}).get("source") != "kita":
                 if round_state["riichi"][seat]:
                     round_state["riichi_furiten"][seat] = True
                 else:

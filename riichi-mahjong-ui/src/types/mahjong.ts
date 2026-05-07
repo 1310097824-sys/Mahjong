@@ -4,6 +4,8 @@ export type GameMode = '4P' | '3P';
 export type RoundLength = 'EAST' | 'HANCHAN';
 export type SanmaScoringMode = 'TSUMO_LOSS' | 'NORTH_BISECTION';
 export type RuleProfile = 'RANKED' | 'FRIEND' | 'KOYAKU';
+export type MinimumHan = 1 | 2 | 4;
+export type AkaDoraCount = 0 | 2 | 3 | 4;
 
 export interface Tile {
   suit: Suit;
@@ -59,6 +61,9 @@ export interface HintDiscard {
   defense_ev?: number;
   table_ev?: number;
   lookahead_ev?: number;
+  alpha_search_ev?: number;
+  alpha_search_depth?: number;
+  alpha_search_label?: string;
   safety_ev?: number;
   safety_score?: number;
   safety_label?: string;
@@ -79,6 +84,17 @@ export interface HintDiscard {
   push_fold_mode?: string;
   pressure_score?: number;
   commitment_score?: number;
+  deal_in_loss_ev?: number;
+  deal_in_rate?: number;
+  deal_in_points?: number;
+  deal_in_label?: string;
+  safe_reserve_ev?: number;
+  safe_reserve_score?: number;
+  safe_reserve_label?: string;
+  global_reward_ev?: number;
+  global_reward_label?: string;
+  win_rank_delta?: number;
+  loss_rank_delta?: number;
   defense_override_ev?: number;
   defense_override_mode?: string;
   defense_override_label?: string;
@@ -91,6 +107,8 @@ export interface HintDiscard {
     risk: number;
     routes: string[];
     estimated_loss: number;
+    threat_type?: string;
+    threat_level?: string;
   }>;
 }
 
@@ -111,6 +129,12 @@ export interface HintSpecialAction {
   call_commitment_label?: string;
   call_commitment_reason?: string;
   call_commitment_blocker?: boolean | null;
+  alpha_action_ev?: number | null;
+  alpha_action_search_ev?: number | null;
+  alpha_action_label?: string;
+  alpha_action_depth?: number | null;
+  global_reward_ev?: number | null;
+  global_reward_label?: string;
   final_ev?: number;
   threshold?: number;
   recommended: boolean;
@@ -215,6 +239,8 @@ export interface PublicGameView {
   round_length: RoundLength;
   rule_profile: RuleProfile;
   koyaku_enabled: boolean;
+  minimum_han: MinimumHan;
+  aka_dora_count: AkaDoraCount;
   sanma_scoring_mode: SanmaScoringMode;
   round_label: string;
   phase: string;
@@ -257,6 +283,8 @@ export interface SavedGameSummary {
   mode: GameMode;
   round_length: RoundLength;
   rule_profile?: RuleProfile;
+  minimum_han?: MinimumHan;
+  aka_dora_count?: AkaDoraCount;
   sanma_scoring_mode?: SanmaScoringMode;
   round_label: string;
   status: string;

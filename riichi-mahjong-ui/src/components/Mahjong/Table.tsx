@@ -13,6 +13,7 @@ import { River, type RiverDiscardView } from './River';
 import { WaterBackground } from './WaterBackground';
 import type {
   ActionLogEntry,
+  AkaDoraCount,
   BackendDiscard,
   BackendMeld,
   BackendTile,
@@ -23,6 +24,7 @@ import type {
   PlayerStats,
   PlayerView,
   PublicGameView,
+  MinimumHan,
   ReplaySnapshot,
   ReplayView,
   RoundLength,
@@ -83,6 +85,32 @@ const SANMA_SCORING_TEXT: Record<SanmaScoringMode, string> = {
   TSUMO_LOSS: '自摸损',
   NORTH_BISECTION: '北家点数折半分摊',
 };
+
+const MINIMUM_HAN_TEXT: Record<MinimumHan, string> = {
+  1: '1 番缚',
+  2: '2 番缚',
+  4: '4 番缚',
+};
+
+const AKA_DORA_TEXT: Record<AkaDoraCount, string> = {
+  0: '无赤宝牌',
+  2: '2 枚赤宝牌',
+  3: '3 枚赤宝牌',
+  4: '4 枚赤宝牌',
+};
+
+const AKA_DORA_OPTIONS_BY_MODE: Record<GameMode, AkaDoraCount[]> = {
+  '4P': [0, 3, 4],
+  '3P': [0, 2],
+};
+
+function defaultAkaDoraCount(nextMode: GameMode): AkaDoraCount {
+  return nextMode === '3P' ? 2 : 3;
+}
+
+function normalizeAkaDoraCount(nextMode: GameMode, count: AkaDoraCount): AkaDoraCount {
+  return AKA_DORA_OPTIONS_BY_MODE[nextMode].includes(count) ? count : defaultAkaDoraCount(nextMode);
+}
 
 const RULE_PROFILE_TEXT: Record<RuleProfile, string> = {
   RANKED: '\u96c0\u9b42\u6bb5\u4f4d\u9ed8\u8ba4',
@@ -998,6 +1026,30 @@ function getHintRiskLabel(risk: number): string {
   return '高危';
 }
 
+function getThreatTypeText(type?: string | null): string {
+  const text: Record<string, string> = {
+    riichi: '立直',
+    flush: '染手',
+    toitoi: '对对',
+    yakuhai: '役牌',
+    fast_open: '副露快攻',
+    open_probe: '副露推进',
+    quiet: '低威胁',
+    unknown: '未知',
+  };
+  return text[type ?? ''] ?? '未知';
+}
+
+function getThreatLevelText(level?: string | null): string {
+  const text: Record<string, string> = {
+    critical: '极高',
+    high: '高',
+    medium: '中',
+    low: '低',
+  };
+  return text[level ?? ''] ?? '低';
+}
+
 function getHintCardTone(index: number, risk: number): {
   shell: string;
   rank: string;
@@ -1836,6 +1888,8 @@ function HintPanel({
               { label: '局况', value: action.table_ev },
               { label: '后续', value: action.post_discard_ev },
               { label: '承诺', value: action.call_commitment_ev ?? undefined },
+              { label: '模拟', value: action.alpha_action_ev ?? undefined },
+              { label: '顺位', value: action.global_reward_ev ?? undefined },
             ].filter((entry): entry is { label: string; value: number } => typeof entry.value === 'number');
 
             return (
@@ -1916,6 +1970,25 @@ function HintPanel({
                   </div>
                 ) : null}
 
+                {action.alpha_action_label ? (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-violet-200/14 bg-violet-950/16 px-3 py-2 text-xs text-violet-50/74">
+                    <span className="font-semibold">动作模拟</span>
+                    <span className="truncate text-right">
+                      {humanizeText(action.alpha_action_label)}
+                      {typeof action.alpha_action_depth === 'number' && action.alpha_action_depth > 0
+                        ? ` · ${action.alpha_action_depth} 巡`
+                        : ''}
+                    </span>
+                  </div>
+                ) : null}
+
+                {action.global_reward_label ? (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-yellow-200/14 bg-yellow-950/16 px-3 py-2 text-xs text-yellow-50/72">
+                    <span className="font-semibold">顺位预测</span>
+                    <span className="truncate text-right">{humanizeText(action.global_reward_label)}</span>
+                  </div>
+                ) : null}
+
                 {action.reason ? (
                   <div className="mt-3 rounded-2xl border border-cyan-200/12 bg-cyan-950/14 px-3 py-2 text-xs leading-5 text-cyan-50/72">
                     {humanizeText(action.reason)}
@@ -1965,6 +2038,9 @@ function HintPanel({
           const waitQuality = typeof item.wait_quality === 'number' ? Math.round(item.wait_quality * 100) : null;
           const pressureScore = typeof item.pressure_score === 'number' ? Math.round(item.pressure_score * 100) : null;
           const commitmentScore = typeof item.commitment_score === 'number' ? Math.round(item.commitment_score * 100) : null;
+          const dealInRate = typeof item.deal_in_rate === 'number' ? Math.round(item.deal_in_rate * 100) : null;
+          const safeReserveScore =
+            typeof item.safe_reserve_score === 'number' ? Math.round(item.safe_reserve_score * 100) : null;
           const valueRoutes = item.value_routes ?? [];
           const evBreakdown = [
             { label: '速度', value: item.speed_ev },
@@ -1972,10 +2048,14 @@ function HintPanel({
             { label: '防守', value: item.defense_ev },
             { label: '局况', value: item.table_ev },
             { label: '前瞻', value: item.lookahead_ev },
+            { label: '模拟', value: item.alpha_search_ev },
+            { label: '顺位', value: item.global_reward_ev },
             { label: '安全', value: item.safety_ev },
             { label: '形状', value: item.shape_ev },
             { label: '预打点', value: item.hand_value_ev },
             { label: '押退', value: item.push_fold_ev },
+            { label: '放铳', value: item.deal_in_loss_ev },
+            { label: '安牌', value: item.safe_reserve_ev },
             { label: '强防', value: item.defense_override_ev },
           ].filter((entry): entry is { label: string; value: number } => typeof entry.value === 'number');
 
@@ -2023,6 +2103,18 @@ function HintPanel({
                 </div>
               ) : null}
 
+              {item.global_reward_label ? (
+                <div className="mt-2 rounded-2xl border border-yellow-200/14 bg-yellow-950/16 px-3 py-2 text-xs text-yellow-50/72">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">顺位预测</span>
+                    <span className="truncate text-right">{humanizeText(item.global_reward_label)}</span>
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-yellow-50/48">
+                    和牌变化 {item.win_rank_delta ?? 0} · 放铳变化 {item.loss_rank_delta ?? 0}
+                  </div>
+                </div>
+              ) : null}
+
               {item.push_fold_label ? (
                 <div
                   className={cn(
@@ -2045,6 +2137,44 @@ function HintPanel({
                       {commitmentScore !== null ? `胜负度 ${commitmentScore}` : ''}
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+
+              {item.deal_in_label ? (
+                <div className="mt-2 rounded-2xl border border-red-200/14 bg-red-950/18 px-3 py-2 text-xs text-red-50/74">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">放铳期望</span>
+                    <span className="truncate text-right">{humanizeText(item.deal_in_label)}</span>
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-red-50/50">
+                    {dealInRate !== null ? `最高概率 ${dealInRate}%` : ''}
+                    {dealInRate !== null && typeof item.deal_in_points === 'number' ? ' · ' : ''}
+                    {typeof item.deal_in_points === 'number' ? `期望失点 ${item.deal_in_points}` : ''}
+                  </div>
+                </div>
+              ) : null}
+
+              {item.safe_reserve_label ? (
+                <div className="mt-2 rounded-2xl border border-teal-200/14 bg-teal-950/16 px-3 py-2 text-xs text-teal-50/72">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold">安全牌储备</span>
+                    <span className="truncate text-right">{humanizeText(item.safe_reserve_label)}</span>
+                  </div>
+                  {safeReserveScore !== null ? (
+                    <div className="mt-1 truncate text-[11px] text-teal-50/48">储备评分 {safeReserveScore}</div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {item.alpha_search_label ? (
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-2xl border border-violet-200/14 bg-violet-950/16 px-3 py-2 text-xs text-violet-50/72">
+                  <span className="font-semibold">多巡模拟</span>
+                  <span className="truncate text-right">
+                    {item.alpha_search_label}
+                    {typeof item.alpha_search_depth === 'number' && item.alpha_search_depth > 0
+                      ? ` · ${item.alpha_search_depth} 巡`
+                      : ''}
+                  </span>
                 </div>
               ) : null}
 
@@ -2131,9 +2261,14 @@ function HintPanel({
                           <span className="truncate font-semibold">{source.name}</span>
                           <span className="font-mono text-rose-100">{formatHintValue(source.risk)}</span>
                         </div>
-                        <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-rose-50/48">
-                          <span className="truncate">{source.routes.join(' / ')}</span>
+                        <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-rose-50/62">
+                          <span className="truncate">
+                            {getThreatTypeText(source.threat_type)} · 威胁{getThreatLevelText(source.threat_level)}
+                          </span>
                           <span>预估 {source.estimated_loss}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-3 text-[11px] text-rose-50/48">
+                          <span className="truncate">{source.routes.map((route) => humanizeText(route)).join(' / ')}</span>
                         </div>
                       </div>
                     ))}
@@ -2349,6 +2484,8 @@ export const Table: React.FC = () => {
   const [mode, setMode] = useState<GameMode>('4P');
   const [roundLength, setRoundLength] = useState<RoundLength>('EAST');
   const [ruleProfile, setRuleProfile] = useState<RuleProfile>('RANKED');
+  const [minimumHan, setMinimumHan] = useState<MinimumHan>(1);
+  const [akaDoraCount, setAkaDoraCount] = useState<AkaDoraCount>(3);
   const [enableKoyaku, setEnableKoyaku] = useState(false);
   const [sanmaScoringMode, setSanmaScoringMode] = useState<SanmaScoringMode>('TSUMO_LOSS');
   const [aiLevels, setAiLevels] = useState<number[]>(DEFAULT_AI_LEVELS['4P']);
@@ -2363,7 +2500,7 @@ export const Table: React.FC = () => {
   const [uiPending, setUiPending] = useState(false);
   const [resultModalOpen, setResultModalOpen] = useState(false);
   const [lastResultEventKey, setLastResultEventKey] = useState<string | null>(null);
-  const [aiMoveDelay, setAiMoveDelay] = useState(2000);
+  const [aiMoveDelay, setAiMoveDelay] = useState(0);
   const [activeDockPanel, setActiveDockPanel] = useState<DockPanelKey | null>(() => getDockPanelFromHash());
   const playbackTokenRef = useRef(0);
 
@@ -2713,6 +2850,7 @@ export const Table: React.FC = () => {
 
   const handleModeChange = (nextMode: GameMode) => {
     setMode(nextMode);
+    setAkaDoraCount((current) => (ruleProfile === 'RANKED' ? defaultAkaDoraCount(nextMode) : normalizeAkaDoraCount(nextMode, current)));
     if (nextMode === '4P') {
       setSanmaScoringMode('TSUMO_LOSS');
     } else if (ruleProfile === 'RANKED') {
@@ -2729,6 +2867,8 @@ export const Table: React.FC = () => {
   const handleRuleProfileChange = (nextProfile: RuleProfile) => {
     setRuleProfile(nextProfile);
     if (nextProfile === 'RANKED') {
+      setMinimumHan(1);
+      setAkaDoraCount(defaultAkaDoraCount(mode));
       setEnableKoyaku(false);
       setSanmaScoringMode('TSUMO_LOSS');
       return;
@@ -2773,7 +2913,7 @@ export const Table: React.FC = () => {
       });
     };
 
-    if (playbackFromStep !== null && game.replay_steps > playbackFromStep) {
+    if (playbackFromStep !== null && aiMoveDelay > 0 && game.replay_steps > playbackFromStep) {
       try {
         const replayResponse = await api<ReplayView>(`/api/games/${game.game_id}/replay`);
         const nextSnapshots = replayResponse.snapshots.slice(playbackFromStep);
@@ -2811,7 +2951,9 @@ export const Table: React.FC = () => {
       applyGameState(game);
     }
 
-    await Promise.all([refreshSavedGames(), refreshStats(nextPlayer ?? game.players.find((player) => player.is_human)?.name)]);
+    void Promise.all([refreshSavedGames(), refreshStats(nextPlayer ?? game.players.find((player) => player.is_human)?.name)]).catch((err) => {
+      setError(err instanceof Error ? err.message : '同步统计失败');
+    });
   };
 
   const handleCreateGame = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -2824,6 +2966,8 @@ export const Table: React.FC = () => {
           mode,
           round_length: roundLength,
           rule_profile: ruleProfile,
+          minimum_han: minimumHan,
+          aka_dora_count: akaDoraCount,
           ai_levels: selectedAiLevels,
           enable_koyaku: enableKoyaku,
           sanma_scoring_mode: sanmaScoringMode,
@@ -2846,6 +2990,13 @@ export const Table: React.FC = () => {
         setReplay(null);
         setReplayIndex(0);
         setPlayerName(response.players.find((player) => player.is_human)?.name ?? '访客');
+        setMode(response.mode);
+        setRoundLength(response.round_length);
+        setRuleProfile(response.rule_profile);
+        setMinimumHan(response.minimum_han);
+        setAkaDoraCount(response.aka_dora_count);
+        setEnableKoyaku(response.koyaku_enabled);
+        setSanmaScoringMode(response.sanma_scoring_mode);
       });
       await syncAfterGameUpdate(response, response.players.find((player) => player.is_human)?.name);
       return response;
@@ -3017,6 +3168,36 @@ export const Table: React.FC = () => {
                     </select>
                   </label>
 
+                  <label className="block text-sm">
+                    <div className="mb-1 text-white/75">最低和牌番数</div>
+                    <select
+                      className="mahjong-console-input"
+                      value={minimumHan}
+                      disabled={ruleProfile === 'RANKED'}
+                      onChange={(event) => setMinimumHan(Number(event.target.value) as MinimumHan)}
+                    >
+                      <option value={1}>{MINIMUM_HAN_TEXT[1]}</option>
+                      <option value={2}>{MINIMUM_HAN_TEXT[2]}</option>
+                      <option value={4}>{MINIMUM_HAN_TEXT[4]}</option>
+                    </select>
+                  </label>
+
+                  <label className="block text-sm">
+                    <div className="mb-1 text-white/75">赤宝牌数量</div>
+                    <select
+                      className="mahjong-console-input"
+                      value={akaDoraCount}
+                      disabled={ruleProfile === 'RANKED'}
+                      onChange={(event) => setAkaDoraCount(Number(event.target.value) as AkaDoraCount)}
+                    >
+                      {AKA_DORA_OPTIONS_BY_MODE[mode].map((count) => (
+                        <option key={count} value={count}>
+                          {AKA_DORA_TEXT[count]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
                   {mode === '3P' ? (
                     <label className="block text-sm">
                       <div className="mb-1 text-white/75">三麻结算方式</div>
@@ -3154,6 +3335,8 @@ export const Table: React.FC = () => {
                           {MODE_TEXT[item.mode]} · {ROUND_LENGTH_TEXT[item.round_length]}
                           {item.rule_profile ? ` · ${RULE_PROFILE_TEXT[item.rule_profile]}` : ''}
                           {item.mode === '3P' ? ` · ${SANMA_SCORING_TEXT[item.sanma_scoring_mode ?? 'TSUMO_LOSS']}` : ''}
+                          {item.minimum_han ? ` · ${MINIMUM_HAN_TEXT[item.minimum_han]}` : ''}
+                          {typeof item.aka_dora_count === 'number' ? ` · ${AKA_DORA_TEXT[item.aka_dora_count]}` : ''}
                           {' · '}
                           {formatRoundLabel(item.round_label)}
                         </div>
@@ -3493,6 +3676,42 @@ export const Table: React.FC = () => {
                 </div>
               </label>
 
+              <label className="block text-sm">
+                <div className="mb-1 text-white/75">最低和牌番数</div>
+                <select
+                  className="mahjong-console-input"
+                  value={minimumHan}
+                  disabled={ruleProfile === 'RANKED'}
+                  onChange={(event) => setMinimumHan(Number(event.target.value) as MinimumHan)}
+                >
+                  <option value={1}>{MINIMUM_HAN_TEXT[1]}</option>
+                  <option value={2}>{MINIMUM_HAN_TEXT[2]}</option>
+                  <option value={4}>{MINIMUM_HAN_TEXT[4]}</option>
+                </select>
+                <div className="mt-2 text-xs text-white/55">
+                  雀魂段位规则固定为 1 番缚；友人场与古役房可切换为 2 番缚或 4 番缚。
+                </div>
+              </label>
+
+              <label className="block text-sm">
+                <div className="mb-1 text-white/75">赤宝牌数量</div>
+                <select
+                  className="mahjong-console-input"
+                  value={akaDoraCount}
+                  disabled={ruleProfile === 'RANKED'}
+                  onChange={(event) => setAkaDoraCount(Number(event.target.value) as AkaDoraCount)}
+                >
+                  {AKA_DORA_OPTIONS_BY_MODE[mode].map((count) => (
+                    <option key={count} value={count}>
+                      {AKA_DORA_TEXT[count]}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-2 text-xs text-white/55">
+                  段位场使用雀魂默认赤宝牌；友人场可切换无赤、三麻 2 赤、四麻 3 赤或四麻 4 赤。
+                </div>
+              </label>
+
               <div className="mahjong-console-section p-3 text-sm text-white">
                 <div className="mb-2 text-white/75">规则预设</div>
                 <div className="grid grid-cols-2 gap-2">
@@ -3641,6 +3860,8 @@ export const Table: React.FC = () => {
                       {MODE_TEXT[item.mode]} · {ROUND_LENGTH_TEXT[item.round_length]}
                       {item.rule_profile ? ` · ${RULE_PROFILE_TEXT[item.rule_profile]}` : ''}
                       {item.mode === '3P' ? ` · ${SANMA_SCORING_TEXT[item.sanma_scoring_mode ?? 'TSUMO_LOSS']}` : ''}
+                      {item.minimum_han ? ` · ${MINIMUM_HAN_TEXT[item.minimum_han]}` : ''}
+                      {typeof item.aka_dora_count === 'number' ? ` · ${AKA_DORA_TEXT[item.aka_dora_count]}` : ''}
                       {' · '}
                       {formatRoundLabel(item.round_label)}
                     </div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -20,6 +21,8 @@ class GameStore:
                 "mode": game["mode"],
                 "round_length": game["round_length"],
                 "rule_profile": game.get("rule_profile", "RANKED"),
+                "minimum_han": game.get("minimum_han", 1),
+                "aka_dora_count": game.get("aka_dora_count"),
                 "sanma_scoring_mode": game.get("sanma_scoring_mode", "TSUMO_LOSS"),
                 "status": game["status"],
                 "round_label": game["public_state"]["round_label"],
@@ -82,9 +85,14 @@ class GameStore:
             record = session.get(GameRecord, game_id)
             if record is None:
                 return None
+            snapshots = deepcopy(record.snapshots_json or [])
+            for snapshot in snapshots:
+                state = snapshot.get("state") if isinstance(snapshot, dict) else None
+                if isinstance(state, dict):
+                    state["hint"] = None
             return {
                 "game_id": record.id,
-                "snapshots": record.snapshots_json,
+                "snapshots": snapshots,
                 "actions": record.action_log_json,
                 "result": record.result_json,
             }

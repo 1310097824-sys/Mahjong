@@ -32,30 +32,30 @@ interface WaterBackgroundProps {
 const DEFAULT_CLASS_NAME = 'pointer-events-none absolute inset-0 z-0 h-full w-full';
 const WATER_MOTION_PROFILE = {
   screen: {
-    autoRippleInterval: 2200,
-    dprCap: 1.15,
-    frameInterval: 1000 / 22,
-    highlightCount: 5,
-    maxRipples: 18,
-    resolutionScale: 0.72,
+    autoRippleInterval: 2600,
+    dprCap: 1.05,
+    frameInterval: 1000 / 18,
+    highlightCount: 4,
+    maxRipples: 12,
+    resolutionScale: 0.62,
     rippleAlpha: 0.26,
     rippleLineScale: 2.1,
     rippleVelocity: 1.4,
     timeStep: 0.012,
-    xStep: 30,
+    xStep: 40,
   },
   table: {
-    autoRippleInterval: 2300,
-    dprCap: 1.25,
-    frameInterval: 1000 / 26,
-    highlightCount: 4,
-    maxRipples: 16,
-    resolutionScale: 0.82,
+    autoRippleInterval: 2800,
+    dprCap: 1.05,
+    frameInterval: 1000 / 20,
+    highlightCount: 3,
+    maxRipples: 10,
+    resolutionScale: 0.66,
     rippleAlpha: 0.18,
     rippleLineScale: 1.7,
     rippleVelocity: 1.1,
     timeStep: 0.015,
-    xStep: 32,
+    xStep: 44,
   },
 } as const;
 
@@ -349,7 +349,7 @@ export const WaterBackground = memo(function WaterBackground({
 
     const handlePointerMove = (event: PointerEvent) => {
       const now = performance.now();
-      if (now - lastPointerRippleAtRef.current < 160) {
+      if (now - lastPointerRippleAtRef.current < (variant === 'table' ? 260 : 200)) {
         return;
       }
 

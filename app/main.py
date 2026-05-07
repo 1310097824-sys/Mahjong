@@ -36,6 +36,8 @@ class CreateGameRequest(BaseModel):
     mode: str = Field(default="4P")
     round_length: str = Field(default="EAST")
     rule_profile: str = Field(default="RANKED")
+    minimum_han: int = Field(default=1)
+    aka_dora_count: int = Field(default=3)
     ai_levels: list[int] = Field(default_factory=lambda: [1, 2, 3])
     enable_koyaku: bool = Field(default=False)
     sanma_scoring_mode: str = Field(default="TSUMO_LOSS")
@@ -58,7 +60,21 @@ class CreateGameRequest(BaseModel):
     @classmethod
     def validate_rule_profile(cls, value: str) -> str:
         if value not in {"RANKED", "FRIEND", "KOYAKU"}:
-            raise ValueError("瑙勫垯妗ｄ綅鍙兘鏄?RANKED銆?FRIEND 鎴?KOYAKU")
+            raise ValueError("规则档位只能是 RANKED、FRIEND 或 KOYAKU")
+        return value
+
+    @field_validator("minimum_han")
+    @classmethod
+    def validate_minimum_han(cls, value: int) -> int:
+        if value not in {1, 2, 4}:
+            raise ValueError("最低和牌番数只能是 1、2 或 4")
+        return value
+
+    @field_validator("aka_dora_count")
+    @classmethod
+    def validate_aka_dora_count(cls, value: int) -> int:
+        if value not in {0, 2, 3, 4}:
+            raise ValueError("赤宝牌数量只能是 0、2、3 或 4")
         return value
 
     @field_validator("ai_levels")
@@ -72,7 +88,7 @@ class CreateGameRequest(BaseModel):
     @classmethod
     def validate_sanma_scoring_mode(cls, value: str) -> str:
         if value not in {"TSUMO_LOSS", "NORTH_BISECTION"}:
-            raise ValueError("涓夐夯璁″垎鍙兘鏄?TSUMO_LOSS 鎴?NORTH_BISECTION")
+            raise ValueError("三麻计分只能是 TSUMO_LOSS 或 NORTH_BISECTION")
         return value
 
 
@@ -154,6 +170,8 @@ def create_game(payload: CreateGameRequest) -> dict:
         enable_koyaku=payload.enable_koyaku,
         sanma_scoring=payload.sanma_scoring_mode,
         rule_profile_name=payload.rule_profile,
+        minimum_han=payload.minimum_han,
+        aka_dora_count=payload.aka_dora_count,
     )
     store.save_game(game)
     return public_payload(game)
