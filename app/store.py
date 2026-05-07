@@ -10,6 +10,53 @@ from app.db import SessionLocal
 from app.models import GameRecord
 
 
+def player_name_aliases(player_name: str) -> set[str]:
+    normalized = (player_name or "").strip() or "访客"
+    aliases = {normalized}
+    # 旧版本默认玩家名是 Guest，但前端会显示成“访客”。统计时把两者视为同一个默认玩家。
+    if normalized in {"访客", "Guest"}:
+        aliases.update({"访客", "Guest"})
+    return aliases
+
+
+def coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.replace(",", "").strip())
+        except ValueError:
+            return None
+    return None
+
+
+def human_placement_from_summary(summary: dict[str, Any], result: dict[str, Any], aliases: set[str]) -> dict[str, Any] | None:
+    placements_data = result.get("placements") or summary.get("placements") or []
+    if not isinstance(placements_data, list):
+        return None
+
+    human_items = [item for item in placements_data if isinstance(item, dict) and item.get("is_human")]
+    if not human_items:
+        human_items = [
+            item
+            for item in placements_data
+            if isinstance(item, dict) and str(item.get("name", "")).strip() in aliases
+        ]
+    if not human_items:
+        return None
+
+    item = human_items[0]
+    placement = coerce_int(item.get("placement"))
+    points = coerce_int(item.get("points"))
+    if placement is None or points is None:
+        return None
+    return {"placement": placement, "points": points}
+
+
 class GameStore:
     def save_game(self, game: dict[str, Any]) -> None:
         with SessionLocal() as session:
@@ -98,32 +145,47 @@ class GameStore:
             }
 
     def get_player_stats(self, player_name: str) -> dict[str, Any]:
+        aliases = player_name_aliases(player_name)
         with SessionLocal() as session:
-            stmt = select(GameRecord).where(GameRecord.player_name == player_name, GameRecord.status == "FINISHED")
-            records = session.scalars(stmt).all()
+            stmt = select(GameRecord.summary_json, GameRecord.result_json).where(
+                GameRecord.player_name.in_(aliases),
+                GameRecord.status == "FINISHED",
+            )
+            records = session.execute(stmt).all()
             if not records:
                 return {
+                    "player_name": (player_name or "").strip() or "访客",
                     "games_played": 0,
                     "avg_placement": None,
                     "wins": 0,
                     "best_score": None,
+                    "ignored_records": 0,
                 }
             placements = []
             best_score = None
             wins = 0
-            for record in records:
-                placements_data = (record.result_json or {}).get("placements", [])
-                for item in placements_data:
-                    if item.get("is_human"):
-                        placements.append(item["placement"])
-                        if item["placement"] == 1:
-                            wins += 1
-                        if best_score is None or item["points"] > best_score:
-                            best_score = item["points"]
+            ignored_records = 0
+            for summary_json, result_json in records:
+                summary = summary_json if isinstance(summary_json, dict) else {}
+                result = result_json if isinstance(result_json, dict) else {}
+                human_result = human_placement_from_summary(summary, result, aliases)
+                if human_result is None:
+                    ignored_records += 1
+                    continue
+
+                placement = human_result["placement"]
+                points = human_result["points"]
+                placements.append(placement)
+                if placement == 1:
+                    wins += 1
+                if best_score is None or points > best_score:
+                    best_score = points
             avg_placement = round(sum(placements) / len(placements), 3) if placements else None
             return {
-                "games_played": len(records),
+                "player_name": (player_name or "").strip() or "访客",
+                "games_played": len(placements),
                 "avg_placement": avg_placement,
                 "wins": wins,
                 "best_score": best_score,
+                "ignored_records": ignored_records,
             }

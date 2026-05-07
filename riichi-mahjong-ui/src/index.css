@@ -318,6 +318,7 @@
     background: linear-gradient(180deg, rgba(4, 11, 16, 0.72), rgba(9, 22, 30, 0.72));
     padding: 0.85rem 1rem;
     color: white;
+    color-scheme: dark;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
       inset 0 -8px 18px rgba(0, 0, 0, 0.14);
@@ -334,6 +335,43 @@
       0 0 0 1px rgba(125, 235, 255, 0.28),
       0 0 24px rgba(82, 219, 255, 0.14),
       inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  }
+
+  .mahjong-console-input::placeholder {
+    color: rgba(226, 247, 255, 0.42);
+  }
+
+  select.mahjong-console-input {
+    appearance: none;
+    cursor: pointer;
+    padding-right: 2.8rem;
+    background:
+      linear-gradient(45deg, transparent 50%, rgba(232, 252, 255, 0.88) 50%) calc(100% - 1.28rem) 50% / 0.42rem 0.42rem no-repeat,
+      linear-gradient(135deg, rgba(232, 252, 255, 0.88) 50%, transparent 50%) calc(100% - 0.98rem) 50% / 0.42rem 0.42rem no-repeat,
+      radial-gradient(circle at right 1.15rem center, rgba(119, 227, 255, 0.12), transparent 1.35rem),
+      linear-gradient(180deg, rgba(4, 11, 16, 0.78), rgba(9, 22, 30, 0.78));
+  }
+
+  select.mahjong-console-input option,
+  select.mahjong-console-input optgroup,
+  .mahjong-page select option,
+  .mahjong-page select optgroup {
+    background-color: #f8fafc;
+    color: #06131a;
+  }
+
+  select.mahjong-console-input option:checked,
+  .mahjong-page select option:checked {
+    background-color: #2563eb;
+    color: #ffffff;
+  }
+
+  select.mahjong-console-input:disabled,
+  .mahjong-console-input:disabled {
+    cursor: not-allowed;
+    border-color: rgba(255, 255, 255, 0.08);
+    color: rgba(226, 247, 255, 0.55);
+    opacity: 0.78;
   }
 
   .mahjong-console-primary {

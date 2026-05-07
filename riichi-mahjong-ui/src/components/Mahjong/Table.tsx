@@ -1,6 +1,6 @@
 ﻿import React, { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useDragControls } from 'framer-motion';
 import { BarChart3, Clapperboard, History, Lightbulb, Radar, ScrollText, Settings2, UserRound, X } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -1768,23 +1768,94 @@ function ResultHandBlock({
   );
 }
 
+type CompactHintItem = {
+  id: string;
+  kind: 'special' | 'discard';
+  label: string;
+  detail: string;
+  badge: string;
+  tile: Tile | null;
+  priority: number;
+};
+
+function compactSpecialActionPriority(action: HintSpecialAction): number {
+  const actionEv = typeof action.final_ev === 'number' ? action.final_ev : 0;
+  if (action.type === 'ron' || action.type === 'tsumo') {
+    return 100000 + actionEv;
+  }
+  if (action.recommended) {
+    return 76000 + actionEv;
+  }
+  return 12000 + actionEv;
+}
+
+function buildCompactHintItems(hint: HintView | null | undefined, legalActions: LegalAction[] = []): CompactHintItem[] {
+  const fallbackSpecialActionHints =
+    hint?.special_actions && hint.special_actions.length ? [] : buildFallbackSpecialActionHints(legalActions);
+  const specialActionHints =
+    hint?.special_actions && hint.special_actions.length ? hint.special_actions : fallbackSpecialActionHints;
+
+  const specialItems = specialActionHints.map((action) => {
+    const actionTile = action.tile ? parseTileLabel(action.tile) : null;
+    const label = humanizeText(action.label || getSpecialActionTypeText(action.type));
+    return {
+      id: `special-${action.id}`,
+      kind: 'special' as const,
+      label,
+      detail: getSpecialActionDecisionText(action),
+      badge: getSpecialActionTypeText(action.type),
+      tile: actionTile,
+      priority: compactSpecialActionPriority(action),
+    };
+  });
+
+  const discardItems = (hint?.top_discards ?? []).map((item, index) => ({
+    id: `discard-${item.tile}-${index}`,
+    kind: 'discard' as const,
+    label: `打 ${formatTileLabelZh(item.tile)}`,
+    detail: index === 0 ? '首选弃牌' : index === 1 ? '次选弃牌' : '备选弃牌',
+    badge: getHintRiskLabel(item.risk),
+    tile: parseTileLabel(item.tile),
+    priority: 52000 - index * 100 + (typeof item.final_ev === 'number' ? item.final_ev : item.score),
+  }));
+
+  return [...specialItems, ...discardItems]
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, 3);
+}
+
 function HintPanel({
   hint,
   legalActions = [],
+  compactOpen = false,
+  onCompactOpenChange,
 }: {
   hint: HintView | null | undefined;
   legalActions?: LegalAction[];
+  compactOpen?: boolean;
+  onCompactOpenChange?: (open: boolean) => void;
 }) {
   const fallbackSpecialActionHints = hint ? [] : buildFallbackSpecialActionHints(legalActions);
   const topDiscards = hint?.top_discards ?? [];
   const specialActionHints =
     hint?.special_actions && hint.special_actions.length ? hint.special_actions : fallbackSpecialActionHints;
   const hasHintContent = Boolean(hint) || specialActionHints.length > 0;
+  const compactHintItems = buildCompactHintItems(hint, legalActions);
+  const canToggleCompact = typeof onCompactOpenChange === 'function';
 
   if (!hasHintContent) {
     return (
       <div className="mahjong-hint-empty px-4 py-5 text-sm text-white/65">
-        提示区会结合向听、进张和风险，给出更适合当前巡目的操作建议。
+        <div>提示区会结合向听、进张和风险，给出更适合当前巡目的操作建议。</div>
+        {canToggleCompact ? (
+          <button
+            type="button"
+            disabled
+            className="mt-4 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-bold tracking-[0.14em] text-white/35"
+          >
+            暂无可展开的小窗提示
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -1797,6 +1868,28 @@ function HintPanel({
 
   return (
     <div className="space-y-4 text-white">
+      {canToggleCompact ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-cyan-200/12 bg-cyan-950/16 px-4 py-3">
+          <div>
+            <div className="text-[11px] font-black tracking-[0.18em] text-cyan-100/55">简洁模式</div>
+            <div className="mt-1 text-xs text-white/58">在牌桌边展开前三推荐，只看结论。</div>
+          </div>
+          <button
+            type="button"
+            aria-pressed={compactOpen}
+            className={cn(
+              'rounded-full border px-4 py-2 text-xs font-black tracking-[0.16em] transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200',
+              compactOpen
+                ? 'border-amber-200/40 bg-amber-300/14 text-amber-100 hover:bg-amber-300/18'
+                : 'border-cyan-200/32 bg-cyan-300/12 text-cyan-50 hover:bg-cyan-300/18',
+            )}
+            onClick={() => onCompactOpenChange?.(!compactOpen)}
+          >
+            {compactOpen ? '收起小窗' : `展开小窗 ${compactHintItems.length ? `(${compactHintItems.length})` : ''}`}
+          </button>
+        </div>
+      ) : null}
+
       <div className="mahjong-hint-shell p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -2479,6 +2572,129 @@ function MacDock({
   );
 }
 
+function CompactHintWindow({
+  open,
+  hint,
+  legalActions = [],
+  onClose,
+}: {
+  open: boolean;
+  hint: HintView | null | undefined;
+  legalActions?: LegalAction[];
+  onClose: () => void;
+}) {
+  const compactItems = buildCompactHintItems(hint, legalActions);
+  const dragControls = useDragControls();
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const resetPosition = useCallback(() => {
+    setDragOffset({ x: 0, y: 0 });
+  }, []);
+
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.aside
+          key="compact-hint-window"
+          initial={{ opacity: 0, x: 18, y: 0, scale: 0.94, filter: 'blur(8px)' }}
+          animate={{ opacity: 1, x: dragOffset.x, y: dragOffset.y, scale: 1, filter: 'blur(0px)' }}
+          exit={{ opacity: 0, x: dragOffset.x + 14, y: dragOffset.y, scale: 0.96, filter: 'blur(8px)' }}
+          transition={{ type: 'spring', stiffness: 380, damping: 32, mass: 0.72 }}
+          drag
+          dragControls={dragControls}
+          dragListener={false}
+          dragMomentum={false}
+          dragElastic={0.04}
+          dragConstraints={{ left: -960, right: 32, top: -88, bottom: 640 }}
+          onDragEnd={(_, info) => {
+            setDragOffset((current) => ({
+              x: current.x + info.offset.x,
+              y: current.y + info.offset.y,
+            }));
+          }}
+          className="fixed right-4 top-[92px] z-[45] w-[min(calc(100vw-2rem),330px)] overflow-hidden rounded-[28px] border border-cyan-100/18 bg-[linear-gradient(180deg,rgba(10,26,30,0.9),rgba(5,10,14,0.84))] text-white shadow-[0_22px_70px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-2xl sm:right-6 sm:top-[118px]"
+          aria-label="行动提示简洁小窗"
+        >
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_16%_0%,rgba(125,255,214,0.2),transparent_34%),radial-gradient(circle_at_90%_24%,rgba(255,210,109,0.13),transparent_30%)]" />
+          <div
+            className="relative flex cursor-grab touch-none items-start justify-between gap-3 border-b border-white/10 px-4 py-3 active:cursor-grabbing"
+            onPointerDown={(event) => dragControls.start(event)}
+            onDoubleClick={resetPosition}
+            title="拖动这里移动小窗，双击回到右上角"
+          >
+            <div>
+              <div className="text-[10px] font-black tracking-[0.22em] text-cyan-100/55">行动小窗</div>
+              <div className="mt-1 text-sm font-black tracking-[0.08em] text-white">前三推荐 · 可拖动</div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                aria-label="行动小窗回到右上角"
+                className="rounded-full border border-white/12 bg-white/8 px-2.5 py-2 text-[10px] font-black tracking-[0.12em] text-white/62 transition hover:bg-white/14 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={resetPosition}
+              >
+                复位
+              </button>
+              <button
+                type="button"
+                aria-label="关闭行动小窗"
+                className="rounded-full border border-white/12 bg-white/8 p-2 text-white/68 transition hover:bg-white/14 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-200"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={onClose}
+              >
+                <X className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            </div>
+          </div>
+
+          <div className="relative space-y-2 px-3 py-3">
+            {compactItems.length ? (
+              compactItems.map((item, index) => (
+                <div
+                  key={item.id}
+                  className={cn(
+                    'flex items-center gap-3 rounded-[20px] border px-3 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]',
+                    index === 0
+                      ? 'border-amber-200/26 bg-amber-300/12'
+                      : index === 1
+                        ? 'border-cyan-200/18 bg-cyan-300/10'
+                        : 'border-white/10 bg-white/[0.045]',
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-black',
+                      index === 0
+                        ? 'border-amber-200/36 bg-amber-300/18 text-amber-100'
+                        : 'border-cyan-100/18 bg-cyan-300/10 text-cyan-50',
+                    )}
+                  >
+                    {index + 1}
+                  </div>
+                  {item.tile ? <MahjongTile tile={item.tile} size="sm" /> : null}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-black tracking-[0.04em] text-white/94">{item.label}</div>
+                    <div className="mt-0.5 truncate text-[11px] font-semibold tracking-[0.08em] text-white/48">
+                      {item.detail}
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-white/12 bg-black/20 px-2 py-1 text-[10px] font-bold tracking-[0.12em] text-white/62">
+                    {item.badge}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-[20px] border border-white/10 bg-white/[0.04] px-4 py-5 text-sm leading-6 text-white/62">
+                当前还没有可展示的前三推荐。轮到你行动时，小窗会自动读取行动提示结果。
+              </div>
+            )}
+          </div>
+        </motion.aside>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 export const Table: React.FC = () => {
   const [playerName, setPlayerName] = useState('访客');
   const [mode, setMode] = useState<GameMode>('4P');
@@ -2502,6 +2718,7 @@ export const Table: React.FC = () => {
   const [lastResultEventKey, setLastResultEventKey] = useState<string | null>(null);
   const [aiMoveDelay, setAiMoveDelay] = useState(0);
   const [activeDockPanel, setActiveDockPanel] = useState<DockPanelKey | null>(() => getDockPanelFromHash());
+  const [compactHintOpen, setCompactHintOpen] = useState(false);
   const playbackTokenRef = useRef(0);
 
   const activeView = replay ? (replay.snapshots[replayIndex]?.state ?? null) : currentGame;
@@ -3296,7 +3513,7 @@ export const Table: React.FC = () => {
                 {stats && stats.games_played ? (
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <div className="mahjong-console-stat p-3">
-                      <div className="text-xs text-white/60">对局数</div>
+                      <div className="text-xs text-white/60">已终局数</div>
                       <div className="mt-1 text-2xl font-black">{stats.games_played}</div>
                     </div>
                     <div className="mahjong-console-stat p-3">
@@ -3304,17 +3521,21 @@ export const Table: React.FC = () => {
                       <div className="mt-1 text-2xl font-black">{stats.wins}</div>
                     </div>
                     <div className="mahjong-console-stat p-3">
-                      <div className="text-xs text-white/60">平均顺位</div>
+                      <div className="text-xs text-white/60">平均终局顺位</div>
                       <div className="mt-1 text-2xl font-black">{stats.avg_placement ?? '-'}</div>
                     </div>
                     <div className="mahjong-console-stat p-3">
-                      <div className="text-xs text-white/60">最高分</div>
-                      <div className="mt-1 text-2xl font-black">{stats.best_score ?? '-'}</div>
+                      <div className="text-xs text-white/60">最高终局点</div>
+                      <div className="mt-1 text-2xl font-black">{typeof stats.best_score === 'number' ? formatPoints(stats.best_score) : '-'}</div>
                     </div>
                   </div>
                 ) : (
                   <div className="mahjong-console-empty px-4 py-6 text-sm text-white/60">暂无数据</div>
                 )}
+                <div className="mahjong-console-section px-4 py-3 text-xs leading-5 text-white/55">
+                  统计口径：只统计玩家“{getDisplayName(stats?.player_name ?? playerName)}”已结束整场且存在终局顺位的存档；进行中对局、单局未终局和异常旧存档不会计入。
+                  {stats?.ignored_records ? ` 已忽略 ${stats.ignored_records} 条缺少终局顺位的旧记录。` : ''}
+                </div>
               </div>
             );
 
@@ -3597,7 +3818,12 @@ export const Table: React.FC = () => {
           case 'hint':
             return (
               <div className="mahjong-console-section p-4">
-                <HintPanel hint={activeView?.hint} legalActions={activeView?.legal_actions} />
+                <HintPanel
+                  hint={activeView?.hint}
+                  legalActions={activeView?.legal_actions}
+                  compactOpen={compactHintOpen}
+                  onCompactOpenChange={setCompactHintOpen}
+                />
               </div>
             );
         }
@@ -3820,7 +4046,7 @@ export const Table: React.FC = () => {
             {stats && stats.games_played ? (
               <div className="grid grid-cols-2 gap-3">
                 <div className="mahjong-console-stat p-3">
-                  <div className="text-xs text-white/60">对局数</div>
+                  <div className="text-xs text-white/60">已终局数</div>
                   <div className="mt-1 text-2xl font-black">{stats.games_played}</div>
                 </div>
                 <div className="mahjong-console-stat p-3">
@@ -3828,12 +4054,12 @@ export const Table: React.FC = () => {
                   <div className="mt-1 text-2xl font-black">{stats.wins}</div>
                 </div>
                 <div className="mahjong-console-stat p-3">
-                  <div className="text-xs text-white/60">平均顺位</div>
+                  <div className="text-xs text-white/60">平均终局顺位</div>
                   <div className="mt-1 text-2xl font-black">{stats.avg_placement ?? '-'}</div>
                 </div>
                 <div className="mahjong-console-stat p-3">
-                  <div className="text-xs text-white/60">最高分</div>
-                  <div className="mt-1 text-2xl font-black">{stats.best_score ?? '-'}</div>
+                  <div className="text-xs text-white/60">最高终局点</div>
+                  <div className="mt-1 text-2xl font-black">{typeof stats.best_score === 'number' ? formatPoints(stats.best_score) : '-'}</div>
                 </div>
               </div>
             ) : (
@@ -3841,6 +4067,10 @@ export const Table: React.FC = () => {
                 暂无数据
               </div>
             )}
+            <div className="mahjong-console-section mt-3 px-4 py-3 text-xs leading-5 text-white/55">
+              统计口径：只统计玩家“{getDisplayName(stats?.player_name ?? playerName)}”已结束整场且存在终局顺位的存档；进行中对局、单局未终局和异常旧存档不会计入。
+              {stats?.ignored_records ? ` 已忽略 ${stats.ignored_records} 条缺少终局顺位的旧记录。` : ''}
+            </div>
           </Card>
 
           <Card className="mahjong-console-card rounded-[30px] p-5 text-white lg:p-6">
@@ -4648,6 +4878,12 @@ export const Table: React.FC = () => {
           </DockPanelShell>
         ) : null}
       </AnimatePresence>
+      <CompactHintWindow
+        open={compactHintOpen}
+        hint={activeView?.hint}
+        legalActions={activeView?.legal_actions}
+        onClose={() => setCompactHintOpen(false)}
+      />
       <MacDock items={dockItems} activeKey={activeDockPanel} onSelect={handleDockSelect} />
 
       {resultModalOpen && !replay && currentGame ? (

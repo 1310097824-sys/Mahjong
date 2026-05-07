@@ -294,8 +294,10 @@ export interface SavedGameSummary {
 }
 
 export interface PlayerStats {
+  player_name?: string;
   games_played: number;
   wins: number;
   avg_placement: number | null;
   best_score: number | null;
+  ignored_records?: number;
 }
