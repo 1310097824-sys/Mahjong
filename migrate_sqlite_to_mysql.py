@@ -1,3 +1,10 @@
+"""旧 SQLite 对局数据迁移脚本。
+
+早期版本使用 SQLite 保存 `games` 表，当前主流程改为 MySQL。这个脚本读取
+`LEGACY_SQLITE_DATABASE_URL` 指向的旧库，把每条 `GameRecord` upsert 到当前
+MySQL 数据库。它只做一次性数据搬迁，不参与正常游戏请求。
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

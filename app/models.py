@@ -1,3 +1,10 @@
+"""SQLAlchemy ORM 数据模型。
+
+当前系统只有一张核心业务表 `games`：它用关系型字段保存索引信息，用 JSON
+字段保存完整对局状态、动作日志、回放快照和结算结果。这种设计在单机/本地
+阶段开发效率高，也便于后续逐步拆成玩家、牌谱、动作明细等更细的表。
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,6 +16,12 @@ from app.db import Base
 
 
 class GameRecord(Base):
+    """一局麻将对局的持久化记录。
+
+    `summary_json` 用于历史列表快速展示；`state_json` 用于恢复当前对局；
+    `action_log_json` 和 `snapshots_json` 用于回放；`result_json` 用于统计和结算面板。
+    """
+
     __tablename__ = "games"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

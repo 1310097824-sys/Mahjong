@@ -12,12 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from mahjong.shanten import Shanten
+from mahjong.tile import TilesConverter
+
+from app import rust_core
 from app.config import settings
 from app.engine import (
     HEAD_BUMP_ENABLED,
     TARGET_POINTS,
+    active_aka_dora_ids,
     apply_forced_furiten_for_current_discard,
     apply_discard,
+    alpha_search_config,
     auto_advance,
     build_reaction_actions,
     build_turn_actions,
@@ -27,33 +33,73 @@ from app.engine import (
     can_double_riichi,
     can_ron_on_last_discard,
     calculate_tenpai_seats,
+    chi_candidates,
+    default_aka_dora_count,
     evaluate_pending_abortive_draw_after_discard,
     ensure_game_defaults,
     ensure_round_state_defaults,
     execute_action,
     effective_tiles_after_discard,
+    finish_game,
     forced_riichi_tsumogiri_action,
     full_honba_value,
+    hand_route_profile,
     is_chankan_state,
     is_houtei_state,
+    is_honor,
     is_renhou_state,
+    is_simple,
+    is_terminal,
+    kuikae_forbidden_tile_types,
     legal_tile_types_for_mode,
+    minimum_han_satisfied,
     new_game,
+    normalize_aka_dora_count,
     perform_call,
     register_liability_for_call,
+    representative_tile_id,
     rotate_turn,
+    round_up_to_100,
     scoring_indicator_tile_id,
+    score_result_total,
     settle_abortive_draw,
     settle_exhaustive_draw,
     settle_ron,
+    sorted_discard_profiles,
     tenpai_wait_tile_types,
+    tile_value_bonus,
     tsumo_payment_map,
+    unique_terminal_honor_types,
     winning_tile_types_for_layout,
+    visible_tile_type_counts,
 )
 from app.main import CreateGameRequest
 
 
 ENGINE_PATH = ROOT / "app" / "engine.py"
+ENGINE_MODULE_PATHS = [
+    ENGINE_PATH,
+    ROOT / "app" / "engine_common.py",
+    ROOT / "app" / "engine_constants.py",
+    ROOT / "app" / "engine_flow.py",
+    ROOT / "app" / "engine_game.py",
+    ROOT / "app" / "engine_mutations.py",
+    ROOT / "app" / "engine_execute.py",
+    ROOT / "app" / "engine_actions.py",
+    ROOT / "app" / "engine_ai.py",
+    ROOT / "app" / "engine_ai_call.py",
+    ROOT / "app" / "engine_ai_decision.py",
+    ROOT / "app" / "engine_ai_discard.py",
+    ROOT / "app" / "engine_ai_hint.py",
+    ROOT / "app" / "engine_risk.py",
+    ROOT / "app" / "engine_rules.py",
+    ROOT / "app" / "engine_round.py",
+    ROOT / "app" / "engine_scoring.py",
+    ROOT / "app" / "engine_settlement.py",
+    ROOT / "app" / "engine_shape.py",
+    ROOT / "app" / "engine_state.py",
+    ROOT / "app" / "engine_tiles.py",
+]
 TABLE_PATH = ROOT / "riichi-mahjong-ui" / "src" / "components" / "Mahjong" / "Table.tsx"
 OUTPUT_PATH = ROOT / "output" / "mahjong_soul_rule_audit.json"
 
@@ -141,6 +187,43 @@ def test_target_scores() -> AuditItem:
         "ranked_target_scores",
         "段位默认目标点",
         "四麻 30000 / 三麻 40000，符合雀魂在线默认收束目标点。",
+        SOURCES[1],
+    )
+
+
+def test_ranked_uma_oka_settlement() -> AuditItem:
+    game_4p = new_game("审计", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    for player, points in zip(game_4p["players"], [30000, 26000, 24000, 20000]):
+        player["points"] = points
+    finish_game(game_4p)
+    placements_4p = game_4p["result_summary"]["placements"]
+    assert placements_4p[0]["rank_score"] == 20.0, "四麻头名未按素点差 +15.0 顺位马结算"
+    assert placements_4p[1]["rank_score"] == 6.0, "四麻二位顺位马/素点差结算错误"
+    assert placements_4p[0]["oka"] == 0.0, "雀魂段位场不应应用 Oka/头名赏"
+    assert round(sum(item["rank_score"] for item in placements_4p), 1) == 0.0, "四麻段位结算分应零和"
+
+    rounded_game = new_game("审计", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    for player, points in zip(rounded_game["players"], [30100, 25900, 24000, 20000]):
+        player["points"] = points
+    finish_game(rounded_game)
+    rounded_top = rounded_game["result_summary"]["placements"][0]
+    assert rounded_top["rank_score_raw"] == 20.1, "段位结算分原始值未按素点差 + 顺位马保存"
+    assert rounded_top["rank_score"] == 21, "雀魂段位结算分应按向上取整显示"
+
+    game_3p = new_game("审计", "3P", "EAST", [1, 2], enable_koyaku=False)
+    for player, points in zip(game_3p["players"], [40000, 35000, 30000]):
+        player["points"] = points
+    finish_game(game_3p)
+    placements_3p = game_3p["result_summary"]["placements"]
+    assert placements_3p[0]["rank_score"] == 20.0, "三麻头名未按素点差 +15.0 顺位马结算"
+    assert placements_3p[1]["rank_score"] == 0.0, "三麻二位素点差结算错误"
+    assert placements_3p[0]["oka"] == 0.0, "雀魂三麻段位场不应应用 Oka/头名赏"
+    assert round(sum(item["rank_score"] for item in placements_3p), 1) == 0.0, "三麻段位结算分应零和"
+
+    return ok(
+        "ranked_uma_oka_settlement",
+        "段位场顺位马与素点差",
+        "终局结果保留原始点棒，同时额外输出雀魂段位场口径的素点差、顺位马与段位结算分；Oka/头名赏保持不适用。",
         SOURCES[1],
     )
 
@@ -819,6 +902,245 @@ def test_sanma_effective_tiles_exclude_removed_manzu() -> AuditItem:
     )
 
 
+def test_rust_core_bridge_consistency() -> AuditItem:
+    if not rust_core.is_available():
+        return ok(
+            "rust_core_bridge",
+            "Rust 底层桥接",
+            "未检测到 Rust 动态库，系统会自动回退到 Python 逻辑，不影响启动。",
+            SOURCES[0],
+        )
+
+    fixtures = [
+        [0, 1],
+        [0, 1, 4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24],
+        [0, 1, 2, 4, 8, 12, 36, 40, 44, 72, 76, 80, 108, 109],
+        [0, 32, 36, 68, 72, 104, 108, 112, 116, 120, 124, 128, 132],
+        [0, 3, 32, 36, 40, 44, 72, 76, 80, 84, 108, 112, 116, 120],
+    ]
+    python_shanten = Shanten()
+    for tiles in fixtures:
+        python_counts = TilesConverter.to_34_array(tiles)
+        rust_counts = rust_core.to_34_array(tiles)
+        assert rust_counts == python_counts, f"Rust 34 计数与 Python 不一致: {tiles}"
+        assert rust_core.shanten_of_tiles(tiles) == python_shanten.calculate_shanten(python_counts), (
+            f"Rust 向听与 Python 不一致: {tiles}"
+        )
+
+    hand = [0, 3, 32, 36, 40, 44, 72, 76, 80, 84, 108, 112, 116, 120]
+    counts = rust_core.to_34_array(hand)
+    assert counts is not None, "Rust 计数失败"
+    base_shanten = rust_core.shanten_from_counts(counts)
+    rust_effective = rust_core.effective_tiles_after_discard("3P", hand, 120, counts, base_shanten)
+    assert rust_effective is not None, "Rust 进张计算失败"
+    _ukeire, good_tiles = rust_effective
+    assert not ({item["type"] for item in good_tiles} & set(range(1, 8))), "Rust 三麻进张不应包含 2-8 万"
+    rust_draws = rust_core.draw_tiles_from_counts("3P", counts, counts, None)
+    assert rust_draws is not None, "Rust 摸牌候选计算失败"
+    _remaining, draw_tiles = rust_draws
+    assert not ({item["type"] for item in draw_tiles} & set(range(1, 8))), "Rust 三麻摸牌候选不应包含 2-8 万"
+
+    rust_kuikae = kuikae_forbidden_tile_types("chi", 0, [4, 8])
+    rust_chi = chi_candidates([0, 4, 12, 16], 8)
+    original_kuikae = rust_core.kuikae_forbidden_tile_types
+    original_chi = rust_core.chi_candidates
+    try:
+        rust_core.kuikae_forbidden_tile_types = lambda *args, **kwargs: None
+        rust_core.chi_candidates = lambda *args, **kwargs: None
+        python_kuikae = kuikae_forbidden_tile_types("chi", 0, [4, 8])
+        python_chi = chi_candidates([0, 4, 12, 16], 8)
+    finally:
+        rust_core.kuikae_forbidden_tile_types = original_kuikae
+        rust_core.chi_candidates = original_chi
+    assert rust_kuikae == python_kuikae, "Rust kuikae bridge changed Python fallback behavior"
+    assert rust_chi == python_chi, "Rust chi bridge changed Python fallback behavior"
+
+    visible_game = new_game("audit", "3P", "EAST", [1, 2], enable_koyaku=False)
+    rust_visible_counts = visible_tile_type_counts(visible_game, 0)
+    original_visible_counts = rust_core.visible_counts_from_tiles
+    try:
+        rust_core.visible_counts_from_tiles = lambda *args, **kwargs: None
+        python_visible_counts = visible_tile_type_counts(visible_game, 0)
+    finally:
+        rust_core.visible_counts_from_tiles = original_visible_counts
+    assert rust_visible_counts == python_visible_counts, "Rust visible tile counts changed Python fallback behavior"
+
+    rust_tile_bonus = tile_value_bonus(visible_game, 0, visible_game["round_state"]["hands"][0][0])
+    original_tile_value_bonus = rust_core.tile_value_bonus
+    try:
+        rust_core.tile_value_bonus = lambda *args, **kwargs: None
+        python_tile_bonus = tile_value_bonus(visible_game, 0, visible_game["round_state"]["hands"][0][0])
+    finally:
+        rust_core.tile_value_bonus = original_tile_value_bonus
+    assert rust_tile_bonus == python_tile_bonus, "Rust tile value bonus changed Python fallback behavior"
+
+    tile_helper_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False, aka_dora_count=4)
+    rust_tile_helpers = (
+        default_aka_dora_count("4P"),
+        default_aka_dora_count("3P"),
+        normalize_aka_dora_count("4P", "RANKED", 4),
+        normalize_aka_dora_count("4P", "FRIEND", 4),
+        normalize_aka_dora_count("3P", "FRIEND", 3),
+        active_aka_dora_ids(tile_helper_game),
+        is_honor(27),
+        is_terminal(8),
+        is_simple(13),
+        legal_tile_types_for_mode("3P"),
+        representative_tile_id(4, [17, 18, 19]),
+    )
+    original_default_aka = rust_core.default_aka_dora_count
+    original_normalize_aka = rust_core.normalize_aka_dora_count
+    original_active_aka = rust_core.active_aka_dora_ids
+    original_is_red = rust_core.is_red_tile
+    original_tile_flags = rust_core.tile_flags
+    original_legal_types = rust_core.legal_tile_types
+    original_representative = rust_core.representative_tile_id
+    try:
+        rust_core.default_aka_dora_count = lambda *args, **kwargs: None
+        rust_core.normalize_aka_dora_count = lambda *args, **kwargs: None
+        rust_core.active_aka_dora_ids = lambda *args, **kwargs: None
+        rust_core.is_red_tile = lambda *args, **kwargs: None
+        rust_core.tile_flags = lambda *args, **kwargs: None
+        rust_core.legal_tile_types = lambda *args, **kwargs: None
+        rust_core.representative_tile_id = lambda *args, **kwargs: None
+        python_tile_helpers = (
+            default_aka_dora_count("4P"),
+            default_aka_dora_count("3P"),
+            normalize_aka_dora_count("4P", "RANKED", 4),
+            normalize_aka_dora_count("4P", "FRIEND", 4),
+            normalize_aka_dora_count("3P", "FRIEND", 3),
+            active_aka_dora_ids(tile_helper_game),
+            is_honor(27),
+            is_terminal(8),
+            is_simple(13),
+            legal_tile_types_for_mode("3P"),
+            representative_tile_id(4, [17, 18, 19]),
+        )
+    finally:
+        rust_core.default_aka_dora_count = original_default_aka
+        rust_core.normalize_aka_dora_count = original_normalize_aka
+        rust_core.active_aka_dora_ids = original_active_aka
+        rust_core.is_red_tile = original_is_red
+        rust_core.tile_flags = original_tile_flags
+        rust_core.legal_tile_types = original_legal_types
+        rust_core.representative_tile_id = original_representative
+    assert rust_tile_helpers == python_tile_helpers, "Rust tile helper functions changed Python fallback behavior"
+
+    terminal_tiles = [0, 1, 32, 108, 109, 124]
+    rust_terminal_types = unique_terminal_honor_types(terminal_tiles)
+    original_terminal_types = rust_core.unique_terminal_honor_types
+    try:
+        rust_core.unique_terminal_honor_types = lambda *args, **kwargs: None
+        python_terminal_types = unique_terminal_honor_types(terminal_tiles)
+    finally:
+        rust_core.unique_terminal_honor_types = original_terminal_types
+    assert rust_terminal_types == python_terminal_types, "Rust terminal/honor type extraction changed Python fallback behavior"
+
+    scoring_game = new_game("audit", "3P", "EAST", [1, 2], enable_koyaku=True)
+    scoring_game["rule_profile"] = "FRIEND"
+    scoring_game["minimum_han"] = 4
+    scoring_game["sanma_scoring_mode"] = "NORTH_BISECTION"
+    scoring_game["round_state"]["honba"] = 2
+    scoring_game["round_state"]["dealer_seat"] = 0
+    scoring_cost = {"main": 3900, "main_bonus": 0, "additional": 2000, "additional_bonus": 0}
+    rust_scoring_helpers = (
+        round_up_to_100(550),
+        score_result_total({"main": 2000, "main_bonus": 300, "additional": 1000, "additional_bonus": 300}),
+        full_honba_value(scoring_game, is_tsumo=True),
+        minimum_han_satisfied(scoring_game, 1, local_yaku_name="Iipin moyue"),
+        tsumo_payment_map(scoring_game, 1, scoring_cost),
+    )
+    original_round_up = rust_core.round_up_to_100
+    original_score_total = rust_core.score_result_total
+    original_honba = rust_core.full_honba_value
+    original_minimum_han = rust_core.minimum_han_satisfied
+    original_tsumo_payments = rust_core.tsumo_payment_map
+    try:
+        rust_core.round_up_to_100 = lambda *args, **kwargs: None
+        rust_core.score_result_total = lambda *args, **kwargs: None
+        rust_core.full_honba_value = lambda *args, **kwargs: None
+        rust_core.minimum_han_satisfied = lambda *args, **kwargs: None
+        rust_core.tsumo_payment_map = lambda *args, **kwargs: None
+        python_scoring_helpers = (
+            round_up_to_100(550),
+            score_result_total({"main": 2000, "main_bonus": 300, "additional": 1000, "additional_bonus": 300}),
+            full_honba_value(scoring_game, is_tsumo=True),
+            minimum_han_satisfied(scoring_game, 1, local_yaku_name="Iipin moyue"),
+            tsumo_payment_map(scoring_game, 1, scoring_cost),
+        )
+    finally:
+        rust_core.round_up_to_100 = original_round_up
+        rust_core.score_result_total = original_score_total
+        rust_core.full_honba_value = original_honba
+        rust_core.minimum_han_satisfied = original_minimum_han
+        rust_core.tsumo_payment_map = original_tsumo_payments
+    assert rust_scoring_helpers == python_scoring_helpers, "Rust scoring payment helpers changed Python fallback behavior"
+
+    route_game = new_game("审计", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    route_seat = 0
+    route_game["round_state"]["hands"][route_seat] = [36, 37, 40, 41, 44, 45, 48, 49, 52, 53, 56, 57, 60]
+    shanten_value = rust_core.shanten_of_tiles(route_game["round_state"]["hands"][route_seat])
+    assert shanten_value is not None, "Rust 路线测试向听计算失败"
+    rust_routes = hand_route_profile(
+        route_game,
+        route_seat,
+        route_game["round_state"]["hands"][route_seat],
+        shanten_value=shanten_value,
+    )
+    original_route_profile = rust_core.hand_route_profile
+    try:
+        rust_core.hand_route_profile = lambda *args, **kwargs: None
+        python_routes = hand_route_profile(
+            route_game,
+            route_seat,
+            route_game["round_state"]["hands"][route_seat],
+            shanten_value=shanten_value,
+        )
+    finally:
+        rust_core.hand_route_profile = original_route_profile
+    assert rust_routes == python_routes, "Rust 手牌路线分析与 Python 回退不一致"
+
+    profile_game = new_game("审计", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    rust_profiles = sorted_discard_profiles(profile_game, 0, 3, deep_search=False)
+    original_discard_metrics = rust_core.discard_metrics_from_counts
+    try:
+        rust_core.discard_metrics_from_counts = lambda *args, **kwargs: None
+        python_profiles = sorted_discard_profiles(profile_game, 0, 3, deep_search=False)
+    finally:
+        rust_core.discard_metrics_from_counts = original_discard_metrics
+    assert len(rust_profiles) == len(python_profiles), "Rust 批量弃牌预计算改变了候选数量"
+    for rust_item, python_item in zip(rust_profiles, python_profiles):
+        for key in ("tile_id", "shanten", "ukeire", "waits", "shape_ev", "final_ev", "score"):
+            assert rust_item.get(key) == python_item.get(key), f"Rust 批量弃牌预计算改变了 {key}"
+
+    return ok(
+        "rust_core_bridge",
+        "Rust 底层桥接",
+        "Rust 牌计数、向听、进张枚举、摸牌候选过滤、手牌路线分析与候选弃牌批量预计算已和 Python 逻辑保持一致。",
+        SOURCES[0],
+    )
+
+
+def test_late_round_ai_search_is_compressed() -> AuditItem:
+    game = new_game("审计", "4P", "EAST", [3, 3, 3], enable_koyaku=False)
+    round_state = game["round_state"]
+    round_state["riichi"][1] = True
+    round_state["riichi"][2] = True
+    round_state["live_wall"] = round_state["live_wall"][:18]
+
+    config = alpha_search_config(game, 0)
+    assert config["depth"] <= 1, "晚巡深搜仍使用多层搜索，可能导致打牌延迟"
+    assert config["draw_beam"] <= 2, "晚巡摸牌 beam 未压缩"
+    assert config["discard_beam"] <= 1, "晚巡弃牌 beam 未压缩"
+
+    return ok(
+        "late_round_ai_search_compression",
+        "晚巡 AI 搜索压缩",
+        "晚巡或高压局面会自动降低 Alpha 风格前瞻深度和 beam，避免越到后巡越卡。",
+        SOURCES[0],
+    )
+
+
 def test_kita_chain_rules() -> AuditItem:
     import app.engine as engine
 
@@ -991,7 +1313,7 @@ def test_pao_only_daisangen_daisuushii() -> AuditItem:
 
 
 def test_local_yaku_completeness() -> AuditItem:
-    engine_text = ENGINE_PATH.read_text(encoding="utf-8")
+    engine_text = "\n".join(path.read_text(encoding="utf-8") for path in ENGINE_MODULE_PATHS if path.exists())
     table_text = TABLE_PATH.read_text(encoding="utf-8")
     missing_engine = sorted(
         name
@@ -1104,6 +1426,7 @@ def detect_missing_rule_profiles() -> AuditItem:
 
 def test_minimum_han_requirement() -> AuditItem:
     import app.engine as engine
+    import app.engine_scoring as engine_scoring
 
     fields = set(CreateGameRequest.model_fields)
     assert "minimum_han" in fields, "create-game request is missing minimum_han"
@@ -1131,17 +1454,17 @@ def test_minimum_han_requirement() -> AuditItem:
             self.fu = fu
             self.fu_details = []
 
-    original_estimate = engine.estimate_hand_value_for_layout
+    original_estimate = engine_scoring.estimate_hand_value_for_layout
     try:
-        engine.estimate_hand_value_for_layout = lambda *args, **kwargs: FakeResult(1, [FakeYaku("Riichi", 1)])
+        engine_scoring.estimate_hand_value_for_layout = lambda *args, **kwargs: FakeResult(1, [FakeYaku("Riichi", 1)])
         one_han = engine.evaluate_hand(friend, 0, friend["round_state"]["hands"][0][-1], is_tsumo=True)
         assert one_han is None, "2-han minimum still allowed a 1-han win"
 
-        engine.estimate_hand_value_for_layout = lambda *args, **kwargs: FakeResult(2, [FakeYaku("Riichi", 1), FakeYaku("Dora", 1)])
+        engine_scoring.estimate_hand_value_for_layout = lambda *args, **kwargs: FakeResult(2, [FakeYaku("Riichi", 1), FakeYaku("Dora", 1)])
         two_han = engine.evaluate_hand(friend, 0, friend["round_state"]["hands"][0][-1], is_tsumo=True)
         assert two_han is not None, "2-han minimum incorrectly blocked a 2-han win"
     finally:
-        engine.estimate_hand_value_for_layout = original_estimate
+        engine_scoring.estimate_hand_value_for_layout = original_estimate
 
     return ok(
         "minimum_han_requirement",
@@ -1217,6 +1540,7 @@ def detect_aka_dora_count_toggle() -> AuditItem:
 CHECKS: list[Callable[[], AuditItem]] = [
     test_ranked_starting_points,
     test_target_scores,
+    test_ranked_uma_oka_settlement,
     test_multi_ron_head_bump_disabled,
     test_multi_ron_mahjong_soul_dealer_keeps,
     test_riichi_sticks_carry_on_draws,
@@ -1236,6 +1560,8 @@ CHECKS: list[Callable[[], AuditItem]] = [
     test_sanma_dead_wall_and_no_north_round,
     test_sanma_one_man_indicator_scores_nine_man,
     test_sanma_effective_tiles_exclude_removed_manzu,
+    test_rust_core_bridge_consistency,
+    test_late_round_ai_search_is_compressed,
     test_kita_chain_rules,
     test_riichi_north_draw_can_kita_in_sanma,
     test_kita_not_houtei_or_renhou,

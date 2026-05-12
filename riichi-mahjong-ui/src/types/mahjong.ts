@@ -212,6 +212,12 @@ export interface ResultPlacement {
   points: number;
   placement: number;
   is_human?: boolean;
+  point_score?: number;
+  uma?: number;
+  oka?: number;
+  rank_bonus?: number;
+  rank_score_raw?: number;
+  rank_score?: number;
 }
 
 export type RoundResult = {

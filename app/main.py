@@ -1,3 +1,11 @@
+"""FastAPI 应用入口。
+
+这里是浏览器前端与后端麻将引擎之间的边界：前端只提交“玩家选择的动作”，
+真正的合法性校验、规则推进、AI 自动行动和结算全部由后端完成。生产模式下
+FastAPI 会托管 `riichi-mahjong-ui/dist` 的 React 构建产物；如果前端尚未构建，
+则返回一个中文提示页，方便本地排查。
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -97,6 +105,8 @@ class ActionRequest(BaseModel):
 
 
 def public_payload(game: dict) -> dict:
+    """把完整内部状态压成前端可安全读取的公开 payload。"""
+
     return {
         **game["public_state"],
         "result_summary": game.get("result_summary"),
@@ -107,6 +117,8 @@ def public_payload(game: dict) -> dict:
 
 @app.on_event("startup")
 def startup() -> None:
+    """应用启动时初始化数据库结构。"""
+
     init_db()
 
 

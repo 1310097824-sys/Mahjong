@@ -1,3 +1,10 @@
+"""对局持久化仓库。
+
+`GameStore` 是 API 层和数据库模型之间的薄封装：API 不直接操作 SQLAlchemy
+Session，而是通过这里完成保存、读取、删除、回放和玩家统计。这样未来要把
+单表 JSON 存储拆成多表牌谱，也只需要优先改这个仓库层。
+"""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -11,6 +18,8 @@ from app.models import GameRecord
 
 
 def player_name_aliases(player_name: str) -> set[str]:
+    """兼容旧版本默认玩家名，避免统计里“Guest”和“访客”分裂。"""
+
     normalized = (player_name or "").strip() or "访客"
     aliases = {normalized}
     # 旧版本默认玩家名是 Guest，但前端会显示成“访客”。统计时把两者视为同一个默认玩家。
@@ -20,6 +29,8 @@ def player_name_aliases(player_name: str) -> set[str]:
 
 
 def coerce_int(value: Any) -> int | None:
+    """把结算 JSON 里的点数/名次安全转换为整数。"""
+
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -35,6 +46,8 @@ def coerce_int(value: Any) -> int | None:
 
 
 def human_placement_from_summary(summary: dict[str, Any], result: dict[str, Any], aliases: set[str]) -> dict[str, Any] | None:
+    """从摘要或结算结果中提取人类玩家的名次与点数。"""
+
     placements_data = result.get("placements") or summary.get("placements") or []
     if not isinstance(placements_data, list):
         return None
@@ -58,6 +71,8 @@ def human_placement_from_summary(summary: dict[str, Any], result: dict[str, Any]
 
 
 class GameStore:
+    """封装所有对 `games` 表的读写操作。"""
+
     def save_game(self, game: dict[str, Any]) -> None:
         with SessionLocal() as session:
             record = session.get(GameRecord, game["game_id"])

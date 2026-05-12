@@ -778,6 +778,12 @@ function formatScoreDelta(value: unknown): string {
   return `${value > 0 ? '+' : ''}${formatPoints(value)}`;
 }
 
+function formatRankScore(value: unknown): string {
+  if (typeof value !== 'number') return '-';
+  const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return `${value > 0 ? '+' : ''}${formatted}`;
+}
+
 function formatResultSubtype(value: unknown): string | null {
   if (typeof value !== 'string' || !value) {
     return null;
@@ -4846,7 +4852,14 @@ export const Table: React.FC = () => {
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-semibold text-white/90">{getDisplayName(String(item.name))}</div>
                       </div>
-                      <div className="mahjong-replay-rank-score">{formatPoints(Number(item.points))}</div>
+                      <div className="text-right">
+                        <div className="mahjong-replay-rank-score">{formatPoints(Number(item.points))}</div>
+                        {typeof item.rank_score === 'number' ? (
+                          <div className="mt-1 text-[11px] font-semibold tracking-[0.12em] text-cyan-100/70">
+                            段位分 {formatRankScore(item.rank_score)}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -5140,7 +5153,12 @@ export const Table: React.FC = () => {
                         <div>
                           第 {String(item.placement)} 名 · {getDisplayName(String(item.name))}
                         </div>
-                        <div className="text-points-gold">{formatPoints(Number(item.points))}</div>
+                        <div className="text-right">
+                          <div className="text-points-gold">{formatPoints(Number(item.points))}</div>
+                          {typeof item.rank_score === 'number' ? (
+                            <div className="mt-0.5 text-[11px] text-cyan-100/65">段位分 {formatRankScore(item.rank_score)}</div>
+                          ) : null}
+                        </div>
                       </div>
                     ))}
                   </div>

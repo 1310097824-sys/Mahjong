@@ -1,73 +1,56 @@
-# 浏览器版雀魂风格立直麻将系统 v2.1
+# 浏览器版雀魂风格立直麻将系统 v2.2
 
-这是一个基于 **Python FastAPI + React + TypeScript + MySQL** 的本地浏览器版立直麻将单人对战系统。项目目标是做出接近成熟网麻体验的本地立直麻将：前端提供沉浸式牌桌、Dock 面板、行动提示和回放展示，后端负责规则推进、AI 决策、计分结算、历史对局和统计持久化。
+这是一个本地运行的浏览器版立直麻将单人对战系统。当前版本采用 **FastAPI + React + TypeScript + MySQL + Rust core** 的混合架构：前端负责牌桌表现和交互，Python 后端负责规则推进、AI 决策、结算和持久化，Rust core 负责向听、进张、风险和 EV 等性能敏感的纯计算。
 
-v2.1 是一个文档和路线图增强版本：在 v2.0 的规则、AI、前端和 MySQL 基础上，补充了数据库结构说明，以及从当前系统一路发展到深度学习 AI、模型平台、联机赛事和研究平台的长期路线图。
+项目目标是逐步做成接近雀魂体验的本地麻将系统：中文界面、网麻式牌桌、三麻/四麻规则、历史对局、回放、行动提示、可解释 AI，以及后续可继续发展到深度学习 AI。
+
+## v2.2 版本重点
+
+- 后端不再是单一 `engine.py` 大文件，当前已经拆成多个 `engine_*` 模块。
+- `engine.py` 保留为兼容聚合入口，旧代码仍可继续 `from app.engine import ...`。
+- Rust core 已接入 Python 桥接层，当前 DLL 版本为 `12`，用于加速规则和 AI 热路径。
+- 后端文件已补充模块级详细注释，解释各文件职责、数据流和设计边界。
+- README 已按当前系统重写，不再按旧版单文件后端描述项目。
+- 当前主数据库为 MySQL，默认数据库名 `mahjong`，核心业务表为 `games`。
 
 ## 当前能力
 
-- 浏览器牌桌：React + TypeScript 构建，支持四家/三家牌桌、手牌、牌河、副露、宝牌、桌芯、结算和回放。
-- 中文优先：界面文案、结算说明、行动提示、规则选项和统计面板以中文展示。
-- 雀魂式信息组织：中心电子桌芯、中心十字牌河、三麻/四麻方位灯、立直横置牌、宝牌指示和副露展示。
-- 原创视觉实现：Canvas 水波桌面、传统麻将牌面、象牙白牌座、立体边框、玻璃质感面板和 macOS Dock 风格底部导航。
-- Dock 面板：牌桌下方固定 Dock，点击后在牌桌附近展开小窗口；行动提示支持前三推荐小窗并可拖动。
-- 规则模式：支持四麻/三麻、东风/半庄、段位默认、友人场、古役房。
-- 规则选项：支持最低和牌番数、赤宝牌数量、三麻自摸损、三麻北家折半、古役开关。
-- 特殊操作：支持吃、碰、明杠、暗杠、加杠、立直、自摸、荣和、拔北、九种九牌。
-- AI 难度：支持 L1/L2/L3，差异体现在随机性、进攻深度、防守意识、押退判断和浅层前瞻。
-- AI 行动提示：弃牌和特殊操作都会接入行动分析，输出推荐、风险、进张、役种路线、押退和 EV 信息。
-- MySQL 持久化：保存对局摘要、完整状态、操作日志、回放快照和结算结果。
-- 历史与统计：支持历史对局、删除历史对局、回放、玩家统计，并兼容旧版 `Guest` / `访客` 默认玩家名。
-- 文档体系：提供结构、技术、规则 AI、数据库、文献和长期路线图说明。
+- 支持四麻和三麻。
+- 支持东风战和半庄战。
+- 支持段位默认、友人场、古役房规则档位。
+- 支持最低和牌番数、赤宝牌数量、三麻自摸损、三麻北家折半、古役开关。
+- 支持吃、碰、明杠、暗杠、加杠、立直、自摸、荣和、拔北、九种九牌。
+- 支持立直后自动摸切、立直后暗杠限制、抢杠、岭上、海底、河底、荒牌流局和途中流局。
+- 支持历史对局保存、删除历史对局、回放快照和玩家统计。
+- 支持 AI L1/L2/L3，L3 包含更强的防守判断、押退判断和浅层前瞻。
+- 支持行动提示面板和前三推荐小窗，提示复用 AI 的实际评估逻辑。
+- 支持 React 牌桌、Canvas 水波背景、传统麻将牌面、象牙白牌座、中心电子桌芯和 macOS Dock 风格底部面板。
 
-## 项目结构
+## 技术栈
 
-```text
-Mahjong/
-├─ app/                         # FastAPI 后端与麻将规则引擎
-│  ├─ config.py                  # 环境变量、MySQL 连接和默认配置
-│  ├─ db.py                      # SQLAlchemy 引擎、会话和数据库初始化
-│  ├─ engine.py                  # 核心规则、AI、动作推进、结算和审计辅助逻辑
-│  ├─ main.py                    # FastAPI API、React 静态资源托管
-│  ├─ models.py                  # SQLAlchemy ORM 模型
-│  ├─ store.py                   # 对局保存、历史、回放和玩家统计
-│  ├─ static/                    # 未构建 React 时的旧静态资源兜底
-│  └─ templates/                 # 旧模板兜底
-├─ riichi-mahjong-ui/            # React + TypeScript 前端
-│  ├─ src/App.tsx                # 前端入口
-│  ├─ src/components/Mahjong/    # 牌桌、手牌、牌河、麻将牌、Dock、水波背景
-│  ├─ src/types/mahjong.ts       # 前后端数据类型
-│  └─ package.json               # 前端依赖与脚本
-├─ tests/
-│  └─ mahjong_soul_rule_audit.py # 雀魂规则对齐自动化审计
-├─ README.md                     # 项目入口说明
-├─ logic.md                      # 打牌逻辑与 AI 最优解计算说明
-├─ programingsign.md             # 项目结构与文件职责说明
-├─ tech.md                       # 技术栈与使用位置说明
-├─ database.md                   # MySQL、SQLAlchemy、表结构和持久化说明
-├─ references.md                 # 论文、文献、规则资料和开源项目来源
-├─ development_roadmap.md        # 后续发展路线图，覆盖 v2.1 到 v8.0
-├─ requirements.txt              # Python 后端依赖
-├─ start_mahjong_system.ps1      # Windows 一键启动脚本
-├─ stop_mahjong_system.ps1       # Windows 一键关闭脚本
-└─ migrate_sqlite_to_mysql.py    # 旧 SQLite 数据迁移到 MySQL
-```
+### 后端
 
-## 快速启动
+- `FastAPI`：提供 HTTP API，并托管 React 构建后的静态资源。
+- `SQLAlchemy 2.x`：管理 MySQL 连接、Session 和 ORM 模型。
+- `PyMySQL`：作为 SQLAlchemy 连接 MySQL 的驱动。
+- `mahjong`：用于基础番符、役种和部分牌理计算。
+- `Rust cdylib`：通过 ctypes 接入 Python，承担性能敏感的纯计算。
 
-### 1. 安装后端依赖
+### 前端
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
+- `React 19`：牌桌、Dock 面板、结算面板、历史和行动提示 UI。
+- `TypeScript`：前后端数据结构约束。
+- `Vite`：本地开发和生产构建。
+- `Tailwind CSS`：主要样式系统。
+- `Framer Motion`：Dock 和弹窗动效。
+- `react-riichi-mahjong-tiles`：传统麻将牌面渲染基础。
+- `Canvas`：实时水波桌面背景。
 
-如果你已经在 `D:\py\.venv` 有可用环境，也可以继续复用现有虚拟环境。
+### 数据库
 
-### 2. 配置 MySQL
-
-项目默认使用 MySQL。根目录 `.env` 示例：
+- 默认数据库：`mahjong`
+- 当前核心表：`games`
+- 连接默认值：
 
 ```env
 MYSQL_HOST=127.0.0.1
@@ -78,15 +61,168 @@ MYSQL_DATABASE=mahjong
 MYSQL_CHARSET=utf8mb4
 ```
 
-也可以直接写完整连接串：
+也可以直接使用完整连接串：
 
 ```env
 DATABASE_URL=mysql+pymysql://root:123456@127.0.0.1:3306/mahjong?charset=utf8mb4
 ```
 
-后端启动时会自动初始化数据库和数据表。当前主数据库名是 `mahjong`，当前业务表是 `games`。详细结构见 `database.md`。
+## 项目结构
 
-### 3. 安装并构建前端
+```text
+Mahjong/
+├─ app/
+│  ├─ main.py                 # FastAPI 入口、API 路由、React 静态资源托管
+│  ├─ config.py               # 环境变量、MySQL 连接串和默认设置
+│  ├─ db.py                   # SQLAlchemy engine、Session、自动建库建表
+│  ├─ models.py               # ORM 模型，目前核心表是 games
+│  ├─ store.py                # 对局保存、读取、删除、回放和玩家统计
+│  ├─ rust_core.py            # Python 到 Rust DLL 的 ctypes 桥接
+│  ├─ engine.py               # 兼容聚合入口，重新导出 engine_* 模块
+│  ├─ engine_common.py        # ActionChoice、稳定随机种子、AI 难度策略
+│  ├─ engine_constants.py     # 规则常量、AI 权重、动作优先级
+│  ├─ engine_tiles.py         # 牌 ID、牌种、赤宝牌、宝牌、向听入口
+│  ├─ engine_shape.py         # 牌型结构、听牌等待、完整形判断
+│  ├─ engine_rules.py         # 规则配置、默认状态、座风和宝牌信息
+│  ├─ engine_round.py         # 天和、地和、海底、河底、九种九牌等时机判断
+│  ├─ engine_scoring.py       # 和牌计分、古役、三麻计分、责任支付
+│  ├─ engine_actions.py       # 合法动作生成和反应动作判断
+│  ├─ engine_mutations.py     # 摸牌、弃牌、鸣牌、揭宝牌等状态变更
+│  ├─ engine_execute.py       # 根据 action_id 执行玩家动作
+│  ├─ engine_flow.py          # AI 自动推进、反应窗口和防死循环调度
+│  ├─ engine_game.py          # 新建对局、开新局、发牌和初始化
+│  ├─ engine_settlement.py    # 和牌、流局、连庄、终局和排名结算
+│  ├─ engine_state.py         # 内部状态转前端公开状态
+│  ├─ engine_risk.py          # 对手模型、危险度、安全度和防守评估
+│  ├─ engine_ai_discard.py    # 弃牌 EV、顺位 EV、Alpha 风格前瞻
+│  ├─ engine_ai_call.py       # 吃碰杠、拔北、立直相关 AI 评估
+│  ├─ engine_ai_hint.py       # 行动提示面板和前三推荐小窗数据
+│  └─ engine_ai_decision.py   # AI 最终行动选择器
+├─ rust_core/
+│  ├─ Cargo.toml
+│  └─ src/
+│     ├─ lib.rs               # Rust core 模块入口
+│     ├─ ffi.rs               # C ABI 暴露给 Python ctypes
+│     ├─ tiles.rs             # 牌 ID、牌种、三麻合法牌、赤宝牌
+│     ├─ shanten.rs           # 标准形、七对子、国士向听
+│     ├─ analysis.rs          # 批量进张、候选摸牌、路线分析
+│     ├─ risk.rs              # 批量危险度、安全度、安全牌储备
+│     ├─ ev.rs                # 弃牌、押退、防守、顺位和前瞻 EV
+│     ├─ rules.rs             # 轻量规则辅助函数
+│     ├─ scoring.rs           # 计分相关纯函数
+│     └─ shape.rs             # 牌型形状判断
+├─ riichi-mahjong-ui/
+│  ├─ src/App.tsx
+│  ├─ src/components/Mahjong/
+│  │  ├─ Table.tsx            # 主牌桌
+│  │  ├─ MahjongTile.tsx      # 麻将牌显示
+│  │  ├─ Hand.tsx             # 手牌
+│  │  ├─ River.tsx            # 牌河
+│  │  └─ WaterBackground.tsx  # Canvas 水波背景
+│  └─ package.json
+├─ tests/
+│  └─ mahjong_soul_rule_audit.py
+├─ migrate_sqlite_to_mysql.py
+├─ start_mahjong_system.ps1
+├─ stop_mahjong_system.ps1
+├─ logic.md
+├─ programingsign.md
+├─ tech.md
+├─ database.md
+├─ references.md
+└─ development_roadmap.md
+```
+
+## 后端运行链路
+
+1. 前端调用 `POST /api/games` 创建新对局。
+2. `app.main` 调用 `new_game()` 创建内部 game 状态。
+3. `engine_game` 初始化玩家、发牌、宝牌、座位和 round_state。
+4. 前端提交动作到 `POST /api/games/{game_id}/actions`。
+5. `engine_execute` 校验 action_id 并执行动作。
+6. `engine_mutations` 修改底层状态。
+7. `engine_flow` 自动推进 AI、反应窗口、流局或结算。
+8. `engine_state` 生成公开状态返回前端。
+9. `store.py` 把完整状态、摘要、动作日志和快照写入 MySQL。
+
+## AI 逻辑概览
+
+AI 当前是可解释的规则型/EV 型 AI，不是深度学习模型。弃牌和特殊操作都会被转成可比较的分数。
+
+主要评估项：
+
+- 向听数和有效进张。
+- 牌型质量，例如两面、坎张、边张、单骑和复合等待。
+- 役种路线，例如立直、断幺、役牌、染手、七对子、对对等。
+- 打点估算，包括宝牌、赤宝牌、拔北、门清价值和立直价值。
+- 对手威胁，包括立直、副露、染手、役牌、对对、宝牌外露和巡目压力。
+- 安全度，包括现物、筋、壁、字牌、对手弃牌河和多家综合风险。
+- 押退判断，包括手牌价值、听牌距离、失点风险、点差和局况。
+- 顺位收益，包括末局守位、追分、避末位、亲家和供托本场。
+- L3 前瞻搜索，包括有限 beam search 和晚巡快速评估。
+
+更详细的计算过程见 `logic.md`。
+
+## Rust core 加速
+
+Rust core 是渐进式迁移，不取代 Python 规则主流程。
+
+当前已迁移的方向包括：
+
+- 牌种计数和基础规则工具。
+- 向听数计算。
+- 打一张后的有效进张。
+- 摸牌候选与批量弃牌指标。
+- 牌型路线粗评。
+- 对手危险度表。
+- 综合安全度和安全牌储备。
+- 结构化弃牌 EV。
+- 押退 EV。
+- 防守覆盖 EV。
+- 放铳损失 EV。
+- 顺位收益 EV。
+- Alpha 风格前瞻叶子估值。
+
+Python 端通过 `app/rust_core.py` 调用 DLL。如果 Rust DLL 不存在或版本不匹配，后端会尽量回退到 Python 逻辑，但 AI 性能会下降。
+
+手动构建 Rust core：
+
+```powershell
+cd rust_core
+cargo build --release
+cd ..
+```
+
+## 快速启动
+
+### 1. 安装 Python 依赖
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+如果你已经在项目父目录有可用 `.venv`，启动脚本也会尝试复用父目录虚拟环境。
+
+### 2. 准备 MySQL
+
+确认本机有 `MySQL80` 服务，且 `.env` 中账号密码正确。
+
+示例 `.env`：
+
+```env
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=123456
+MYSQL_DATABASE=mahjong
+MYSQL_CHARSET=utf8mb4
+```
+
+后端启动时会自动创建数据库和 `games` 表。
+
+### 3. 安装前端依赖并构建
 
 ```powershell
 cd riichi-mahjong-ui
@@ -95,21 +231,19 @@ npm run build
 cd ..
 ```
 
-构建产物会输出到 `riichi-mahjong-ui/dist`，FastAPI 会优先托管这个 React 生产构建。
-
 ### 4. 一键启动
 
 ```powershell
 .\start_mahjong_system.ps1
 ```
 
-脚本会检查 `MySQL80` 服务、确认前端已经构建、启动 FastAPI，并打开浏览器。
+脚本会自动：
 
-访问地址：
-
-```text
-http://127.0.0.1:8000
-```
+- 检查并启动 `MySQL80` 服务。
+- 检查前端构建是否过期，必要时自动 `npm run build`。
+- 检查 Rust core 是否过期，必要时自动 `cargo build --release`。
+- 启动 FastAPI 后端。
+- 打开浏览器访问 `http://127.0.0.1:8000`。
 
 关闭系统：
 
@@ -117,7 +251,7 @@ http://127.0.0.1:8000
 .\stop_mahjong_system.ps1
 ```
 
-只手动启动后端时可使用：
+手动启动后端：
 
 ```powershell
 uvicorn app.main:app --reload
@@ -125,97 +259,51 @@ uvicorn app.main:app --reload
 
 ## API 概览
 
-- `GET /`：打开 React 前端页面。
+- `GET /`：打开 React 前端。
 - `GET /api/health`：健康检查。
-- `GET /api/games`：读取历史对局列表。
-- `GET /api/games/{game_id}`：读取指定对局当前公开状态。
+- `GET /api/games`：历史对局列表。
+- `GET /api/games/{game_id}`：读取指定对局。
 - `DELETE /api/games/{game_id}`：删除历史对局。
 - `POST /api/games`：创建新对局。
-- `POST /api/games/{game_id}/actions`：提交出牌或特殊操作。
-- `GET /api/games/{game_id}/replay`：读取回放快照。
+- `POST /api/games/{game_id}/actions`：提交动作。
+- `GET /api/games/{game_id}/replay`：读取回放。
 - `GET /api/stats/{player_name}`：读取玩家统计。
 
-## 数据库与持久化
+## 数据库说明
 
-系统当前使用 `SQLAlchemy + PyMySQL + MySQL`：
+当前核心表是 `games`。
 
-- `MySQL`：实际保存历史对局、回放、结算和统计数据。
-- `PyMySQL`：Python 连接 MySQL 的底层驱动。
-- `SQLAlchemy`：创建连接引擎、Session、ORM 表模型和数据库读写。
+主要字段：
 
-当前 MySQL 使用 `mahjong` 数据库，核心业务表为 `games`。系统采用“关系型表 + JSON 文档”的方式保存牌局：`summary_json` 用于历史列表，`state_json` 用于恢复完整对局，`action_log_json` 用于动作日志，`snapshots_json` 用于回放，`result_json` 用于终局结算。
+- `id`：对局 ID。
+- `player_name`：人类玩家名。
+- `mode`：`4P` 或 `3P`。
+- `round_length`：`EAST` 或 `HANCHAN`。
+- `status`：对局状态。
+- `summary_json`：历史列表摘要。
+- `state_json`：完整对局状态。
+- `action_log_json`：动作日志。
+- `snapshots_json`：回放快照。
+- `result_json`：终局结算。
+- `created_at` / `updated_at`：创建与更新时间。
 
-详细字段、索引、读写流程和后续拆表建议见 `database.md`。
-
-## 规则说明
-
-核心规则位于 `app/engine.py`。当前系统以后端为唯一规则源，前端只提交动作，不直接裁定牌理。
-
-已覆盖的主要规则方向：
-
-- 四麻和三麻牌山、王牌、宝牌指示、赤宝牌。
-- 东风和半庄对局流程。
-- 段位默认、友人场、古役房规则档位。
-- 起点和目标点：四麻默认 25000 / 30000，三麻默认 35000 / 40000。
-- 吃、碰、明杠、暗杠、加杠、抢杠、岭上、海底、河底。
-- 立直、一发、双立直、立直后自动摸切、立直后暗杠限制。
-- 三麻拔北、三麻自摸损、三麻北家折半。
-- 多响、供托、本场、连庄、荒牌流局、途中流局、九种九牌。
-- 古役房可选古役，包括人和、大车轮、大竹林、大数邻、大七星、三连刻、一色三顺等。
-
-规则对齐请运行：
-
-```powershell
-python tests\mahjong_soul_rule_audit.py
-```
-
-## AI 与行动提示
-
-当前 AI 是可解释的规则型/EV 型 AI，不是神经网络模型，也没有直接接入 Suphx、AlphaJong、NAGA 或 Mortal 权重。
-
-AI 决策会综合：
-
-- 向听数和有效进张。
-- 牌型质量、两面/坎张/边张/单骑等等待质量。
-- 役种路线和估算打点。
-- 宝牌、赤宝牌、拔北、门清立直价值。
-- 对手立直、副露、染手、役牌、威胁等级和预估失点。
-- 现物、筋、壁、字牌等安全度。
-- 点差、亲家、南场/东场、守位/追分等局况。
-- L3 的浅层前瞻搜索和全局顺位收益。
-
-行动提示面板复用 AI 的评估结果。完整面板会展示详细分析，简洁小窗只显示前三推荐，适合打牌时快速参考。
-
-更详细的算法解释见 `logic.md`。
-
-## 长期发展方向
-
-长期路线集中在 `development_roadmap.md`，已经覆盖：
-
-- `v2.1 - v2.6`：规则审计、牌桌体验、AI 强化、回放统计、数据库拆表。
-- `v3.0 - v3.5`：本地账号、原创段位、成就任务、WebSocket 联机。
-- `v4.0 - v5.0`：高级 AI 教练、训练数据闭环、监督学习、价值网络、模型推理、L4/L5 深度学习 AI。
-- `v5.1 - v6.0`：大规模数据集、训练基础设施、高级模型结构、自对弈、AI 平台化。
-- `v6.1 - v8.0`：多模型生态、云训练、统一牌谱协议、AI 联赛、个性化教练、插件生态、隐私数据协作、研究平台和成熟麻将 AI 平台。
-
-这份路线图是后续持续开发的主参考文档。
-
-## 文档索引
-
-- `logic.md`：打牌逻辑、规则推进和 AI 最优解计算过程。
-- `programingsign.md`：项目结构和各文件职责。
-- `tech.md`：系统使用的技术栈以及每项技术用在哪里。
-- `database.md`：SQLAlchemy、PyMySQL、MySQL、表结构、字段和后续拆表方向。
-- `references.md`：论文、规则资料、开源库和 AI 项目参考来源。
-- `development_roadmap.md`：后续从 v2.1 到 v8.0 的详细发展路线。
-- `spec.pdf` / `spec.txt`：早期实施方案文档。
+更详细的数据库设计见 `database.md`。
 
 ## 测试与验证
 
-后端语法检查：
+Python 语法检查：
 
 ```powershell
-python -m py_compile app\engine.py app\main.py app\store.py tests\mahjong_soul_rule_audit.py
+python -m py_compile app\*.py migrate_sqlite_to_mysql.py tests\mahjong_soul_rule_audit.py
+```
+
+Rust 测试：
+
+```powershell
+cd rust_core
+cargo test
+cargo build --release
+cd ..
 ```
 
 雀魂规则审计：
@@ -229,6 +317,7 @@ python tests\mahjong_soul_rule_audit.py
 ```powershell
 cd riichi-mahjong-ui
 npm run lint
+cd ..
 ```
 
 前端生产构建：
@@ -236,20 +325,21 @@ npm run lint
 ```powershell
 cd riichi-mahjong-ui
 npm run build
+cd ..
 ```
 
-## v2.1 版本重点
+## 文档索引
 
-- 重写 README，统一反映当前 v2.1 系统能力、文档体系和长期路线。
-- 新增 `database.md`，详细说明 SQLAlchemy、PyMySQL、MySQL、`mahjong` 数据库、`games` 表结构和后续拆表方向。
-- 新增 `development_roadmap.md`，详细规划从 v2.1 到 v8.0 的发展方向。
-- 路线图补充深度学习 AI 方向，包括数据闭环、监督学习、价值网络、离线强化学习、自对弈、模型服务、AI 联赛和研究平台。
-- 当前版本继续保留 v2.0 的规则、AI、Dock 面板、行动提示小窗、MySQL 持久化和规则审计能力。
+- `logic.md`：打牌逻辑、AI 评估和最优解计算过程。
+- `programingsign.md`：项目结构和各文件职责。
+- `tech.md`：技术栈和使用位置。
+- `database.md`：MySQL、SQLAlchemy、表结构和持久化流程。
+- `references.md`：论文、规则资料、开源项目和 AI 参考来源。
+- `development_roadmap.md`：后续从网麻系统到深度学习 AI 的路线。
 
 ## 注意事项
 
-- `.env`、日志、数据库文件、构建缓存和 `node_modules` 不应提交到 Git。
-- `mahjong.db` 是旧 SQLite 数据文件，当前主流程以 MySQL 为准。
-- 如果 MySQL 重启后异常，优先检查 `mysqld.exe` 游离进程、3306 端口占用、服务状态和数据目录锁文件。
-- 如果打开页面仍是旧 UI，请重新执行 `npm run build`，再重启 FastAPI。
-- 当前 AI 已具备网麻式启发，但还不是深度学习强 AI；深度学习路线已在 `development_roadmap.md` 中作为长期目标拆解。
+- `.env`、日志、pid、MySQL 数据文件、Python 缓存、Rust target 和前端 node_modules 不应提交。
+- 如果页面仍显示旧前端，先重新执行 `npm run build`，再重启 FastAPI。
+- 如果 MySQL 启动失败，优先检查 `MySQL80` 服务、3306 端口占用、游离 `mysqld.exe` 和数据目录锁。
+- 当前 AI 已接近“可解释网麻 AI”的方向，但还不是训练型深度学习 AI。后续深度学习路线已在 `development_roadmap.md` 中拆解。
