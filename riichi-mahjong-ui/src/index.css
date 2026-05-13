@@ -482,6 +482,70 @@
       0 10px 18px rgba(15, 116, 155, 0.12);
   }
 
+  .mahjong-replay-pill-soft {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.025));
+    color: rgba(255, 255, 255, 0.68);
+  }
+
+  .mahjong-replay-play {
+    min-height: 3rem;
+    justify-content: center;
+    gap: 0.55rem;
+    border-color: rgba(125, 235, 255, 0.2);
+    background:
+      radial-gradient(circle at 20% 0%, rgba(125, 235, 255, 0.16), transparent 34%),
+      linear-gradient(180deg, rgba(27, 80, 95, 0.78), rgba(7, 24, 32, 0.76));
+    color: rgba(223, 253, 255, 0.96);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 14px 28px rgba(0, 0, 0, 0.18);
+  }
+
+  .mahjong-replay-play.is-playing {
+    border-color: rgba(255, 223, 132, 0.34);
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255, 223, 132, 0.22), transparent 34%),
+      linear-gradient(180deg, rgba(93, 72, 28, 0.82), rgba(33, 23, 8, 0.78));
+    color: rgba(255, 248, 218, 0.98);
+  }
+
+  .mahjong-replay-speed-control {
+    display: flex;
+    min-height: 3rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02)),
+      rgba(0, 0, 0, 0.16);
+    padding: 0.35rem 0.45rem 0.35rem 0.9rem;
+    color: rgba(255, 255, 255, 0.58);
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+  }
+
+  .mahjong-replay-speed-control select {
+    min-width: 5.5rem;
+    border-radius: 0.8rem;
+    border: 1px solid rgba(125, 235, 255, 0.2);
+    background: rgba(5, 15, 20, 0.94);
+    padding: 0.58rem 0.8rem;
+    color: rgba(234, 254, 255, 0.96);
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    outline: none;
+  }
+
+  .mahjong-replay-speed-control select:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
   .mahjong-replay-track {
     position: relative;
     height: 1.25rem;

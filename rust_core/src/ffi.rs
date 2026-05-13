@@ -19,11 +19,18 @@ use crate::risk::{
     tile_danger_table, tile_value_bonus, DangerInput,
 };
 use crate::rules::{
-    chi_candidate_pairs, kuikae_forbidden_tile_types, max_round_count, next_seat, player_count,
-    ranked_settlement_scores, round_target_count, seat_distance,
+    can_abortive_draw_nine_terminals, can_double_riichi, chi_candidate_pairs, goal_score_reached,
+    is_chankan_state, is_chiihou_state, is_furiten, is_haitei_state, is_houtei_state,
+    is_renhou_state, is_tenhou_state, is_win_like_round_result, kuikae_forbidden_tile_types,
+    max_round_count, next_seat, pending_abortive_draw_kind, player_count, ranked_settlement_scores,
+    round_target_count, seat_distance, seat_wind_code, should_abort_for_four_kans,
+    should_auto_stop_all_last_dealer,
 };
 use crate::scoring::{
-    full_honba_value, minimum_han_satisfied, round_up_to_100, score_result_total, tsumo_payment_map,
+    full_honba_value, is_nagashi_mangan_candidate, liability_context_profile,
+    liability_key_for_call, local_han_yaku_mask, local_mangan_yaku_code, local_pattern_yaku_mask,
+    local_yakuman_yaku_code, minimum_han_satisfied, round_up_to_100, score_result_total,
+    tsumo_payment_map,
 };
 use crate::shanten::calculate_shanten;
 use crate::shape::{
@@ -40,10 +47,13 @@ use crate::tiles::{
 };
 
 const ERR_INVALID_INPUT: i32 = -999;
+// ctypes 侧把 None 当成“Rust 不可用或输入不适合 Rust 路径”的统一兜底信号。
+// 因此所有返回 i32 的 FFI 函数都用同一个明显越界的哨兵值，而业务层的 false/0
+// 仍然可以作为正常结果返回，不会和错误状态混在一起。
 
 #[no_mangle]
 pub extern "C" fn mahjong_core_version() -> u32 {
-    21
+    30
 }
 
 #[no_mangle]
@@ -175,6 +185,19 @@ pub extern "C" fn mahjong_core_seat_distance(origin: i32, target: i32, count: i3
 }
 
 #[no_mangle]
+pub extern "C" fn mahjong_core_seat_wind_code(
+    player_count: usize,
+    dealer: usize,
+    seat: usize,
+) -> i32 {
+    // 座风跨 FFI 只传编码：0=东、1=南、2=西、3=北。
+    // Python 继续负责展示文字，这样旧的前端/日志格式不用跟着 Rust 改。
+    seat_wind_code(player_count, dealer, seat)
+        .map(i32::from)
+        .unwrap_or(ERR_INVALID_INPUT)
+}
+
+#[no_mangle]
 pub extern "C" fn mahjong_core_round_target_count(mode: u8, east_only: u8) -> i32 {
     round_target_count(mode, east_only != 0)
 }
@@ -182,6 +205,54 @@ pub extern "C" fn mahjong_core_round_target_count(mode: u8, east_only: u8) -> i3
 #[no_mangle]
 pub extern "C" fn mahjong_core_max_round_count(mode: u8, east_only: u8) -> i32 {
     max_round_count(mode, east_only != 0)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_win_like_round_result(kind_code: u8, subtype_code: u8) -> i32 {
+    i32::from(is_win_like_round_result(kind_code, subtype_code))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_goal_score_reached(
+    player_points_ptr: *const i32,
+    player_points_len: usize,
+    target_score: i32,
+) -> i32 {
+    if player_points_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let player_points = unsafe { std::slice::from_raw_parts(player_points_ptr, player_points_len) };
+    i32::from(goal_score_reached(player_points, target_score))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_should_auto_stop_all_last_dealer(
+    dealer_continues: u8,
+    round_cursor: i32,
+    base_rounds: i32,
+    round_result_kind_code: u8,
+    dealer_seat: usize,
+    player_points_ptr: *const i32,
+    player_points_len: usize,
+    target_score: i32,
+) -> i32 {
+    // points 数组由 Python 按 seat 顺序传入，Rust 用同分低座位优先规则计算当前头名。
+    // 返回 -999 只代表输入结构非法；正常的“不自动终局”仍返回 0。
+    if player_points_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let player_points = unsafe { std::slice::from_raw_parts(player_points_ptr, player_points_len) };
+    should_auto_stop_all_last_dealer(
+        dealer_continues != 0,
+        round_cursor,
+        base_rounds,
+        round_result_kind_code,
+        dealer_seat,
+        player_points,
+        target_score,
+    )
+    .map(i32::from)
+    .unwrap_or(ERR_INVALID_INPUT)
 }
 
 #[no_mangle]
@@ -274,6 +345,239 @@ pub extern "C" fn mahjong_core_chi_candidate_pairs(
         out_tile_ids[index * 2 + 1] = *right;
     }
     candidates.len() as i32
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_furiten(
+    win_tile_type: i32,
+    discard_types_ptr: *const i32,
+    discard_types_len: usize,
+    temporary: u8,
+    riichi: u8,
+) -> i32 {
+    // Python 传入的是弃牌“牌种”数组，不是实体牌 ID 数组。temporary/riichi 用 u8
+    // 承载布尔值，是因为 C ABI 没有稳定的 Rust bool 布局承诺；0 视为 false，
+    // 其他值都视为 true。
+    if win_tile_type < 0 || discard_types_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let discard_types = unsafe { std::slice::from_raw_parts(discard_types_ptr, discard_types_len) };
+    i32::from(is_furiten(
+        win_tile_type as usize,
+        discard_types,
+        temporary != 0,
+        riichi != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_can_double_riichi(has_discards: u8, has_calls: u8) -> i32 {
+    i32::from(can_double_riichi(has_discards != 0, has_calls != 0))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_pending_abortive_draw_kind(
+    player_count: usize,
+    first_discard_tiles_ptr: *const i32,
+    first_discard_tiles_len: usize,
+    discard_counts_ptr: *const i32,
+    discard_counts_len: usize,
+    riichi_flags_ptr: *const u8,
+    riichi_flags_len: usize,
+    has_calls: u8,
+) -> i32 {
+    // 三组数组都以 player_count 为逻辑长度读取：第一张弃牌实体 ID、每家弃牌数量、
+    // 每家立直状态。Rust 不拥有这些内存，只在本函数调用期间借用 slice，所以不能
+    // 把 slice 或指针保存到任何全局状态里。
+    if first_discard_tiles_ptr.is_null()
+        || discard_counts_ptr.is_null()
+        || riichi_flags_ptr.is_null()
+    {
+        return ERR_INVALID_INPUT;
+    }
+    let first_discards =
+        unsafe { std::slice::from_raw_parts(first_discard_tiles_ptr, first_discard_tiles_len) };
+    let discard_counts =
+        unsafe { std::slice::from_raw_parts(discard_counts_ptr, discard_counts_len) };
+    let riichi_flags = unsafe { std::slice::from_raw_parts(riichi_flags_ptr, riichi_flags_len) };
+    pending_abortive_draw_kind(
+        player_count,
+        first_discards,
+        discard_counts,
+        riichi_flags,
+        has_calls != 0,
+    )
+    .unwrap_or(ERR_INVALID_INPUT)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_should_abort_for_four_kans(
+    kan_count: i32,
+    kan_owner_flags_ptr: *const u8,
+    kan_owner_flags_len: usize,
+) -> i32 {
+    // owner_flags 是 Python 从 melds 里预先归纳出的“该座位是否拥有至少一个杠”。
+    // FFI 层不解析 meld 字典，保持 Rust 核心只依赖扁平数组，后续更容易做批量迁移。
+    if kan_owner_flags_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let owner_flags =
+        unsafe { std::slice::from_raw_parts(kan_owner_flags_ptr, kan_owner_flags_len) };
+    i32::from(should_abort_for_four_kans(kan_count, owner_flags))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_tenhou_state(
+    player_count: usize,
+    seat: usize,
+    dealer: usize,
+    is_tsumo: u8,
+    has_calls: u8,
+    discard_counts_ptr: *const i32,
+    discard_counts_len: usize,
+) -> i32 {
+    // discard_counts 是每家弃牌数量的扁平快照，Rust 只借用到函数返回为止。
+    // 返回 -999 时 Python 会回到原来的字典判断，避免旧 DLL 或异常状态直接中断游戏。
+    if discard_counts_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let discard_counts =
+        unsafe { std::slice::from_raw_parts(discard_counts_ptr, discard_counts_len) };
+    let Some(result) = is_tenhou_state(
+        player_count,
+        seat,
+        dealer,
+        is_tsumo != 0,
+        has_calls != 0,
+        discard_counts,
+    ) else {
+        return ERR_INVALID_INPUT;
+    };
+    i32::from(result)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_chiihou_state(
+    player_count: usize,
+    seat: usize,
+    dealer: usize,
+    is_tsumo: u8,
+    has_calls: u8,
+    seat_discard_count: i32,
+) -> i32 {
+    let Some(result) = is_chiihou_state(
+        player_count,
+        seat,
+        dealer,
+        is_tsumo != 0,
+        has_calls != 0,
+        seat_discard_count,
+    ) else {
+        return ERR_INVALID_INPUT;
+    };
+    i32::from(result)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_haitei_state(
+    is_tsumo: u8,
+    has_current_draw: u8,
+    current_draw_from_wall: u8,
+    turn_is_seat: u8,
+    live_wall_empty: u8,
+) -> i32 {
+    i32::from(is_haitei_state(
+        is_tsumo != 0,
+        has_current_draw != 0,
+        current_draw_from_wall != 0,
+        turn_is_seat != 0,
+        live_wall_empty != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_houtei_state(
+    is_tsumo: u8,
+    has_last_discard: u8,
+    discard_from_replacement_source: u8,
+    discarder_last_draw_from_wall: u8,
+    live_wall_empty: u8,
+) -> i32 {
+    i32::from(is_houtei_state(
+        is_tsumo != 0,
+        has_last_discard != 0,
+        discard_from_replacement_source != 0,
+        discarder_last_draw_from_wall != 0,
+        live_wall_empty != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_chankan_state(
+    is_tsumo: u8,
+    has_last_discard: u8,
+    discard_source_is_kan: u8,
+    kan_type_is_closed: u8,
+) -> i32 {
+    i32::from(is_chankan_state(
+        is_tsumo != 0,
+        has_last_discard != 0,
+        discard_source_is_kan != 0,
+        kan_type_is_closed != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_renhou_state(
+    player_count: usize,
+    seat: usize,
+    dealer: usize,
+    is_tsumo: u8,
+    koyaku_enabled: u8,
+    has_calls: u8,
+    seat_has_last_draw_source: u8,
+    has_last_discard: u8,
+    last_discard_seat: usize,
+    last_discard_from_replacement_source: u8,
+    seat_discard_count: i32,
+) -> i32 {
+    // 人和需要的状态位比较多，但仍然都是标量：Python 负责从 round_state 中提取
+    // “最后弃牌来自谁/是否补牌来源”等语义，Rust 只做纯规则组合和边界校验。
+    let Some(result) = is_renhou_state(
+        player_count,
+        seat,
+        dealer,
+        is_tsumo != 0,
+        koyaku_enabled != 0,
+        has_calls != 0,
+        seat_has_last_draw_source != 0,
+        has_last_discard != 0,
+        last_discard_seat,
+        last_discard_from_replacement_source != 0,
+        seat_discard_count,
+    ) else {
+        return ERR_INVALID_INPUT;
+    };
+    i32::from(result)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_can_abortive_draw_nine_terminals(
+    phase_is_discard: u8,
+    turn_is_seat: u8,
+    has_current_draw: u8,
+    seat_has_discards: u8,
+    has_calls: u8,
+    unique_terminal_honor_count: usize,
+) -> i32 {
+    i32::from(can_abortive_draw_nine_terminals(
+        phase_is_discard != 0,
+        turn_is_seat != 0,
+        has_current_draw != 0,
+        seat_has_discards != 0,
+        has_calls != 0,
+        unique_terminal_honor_count,
+    ))
 }
 
 #[no_mangle]
@@ -372,6 +676,167 @@ pub extern "C" fn mahjong_core_tsumo_payment_map(
     out_payments.fill(0);
     out_payments[..player_count].copy_from_slice(&payments[..player_count]);
     player_count as i32
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_is_nagashi_mangan_candidate(
+    tile_ids_ptr: *const i32,
+    tile_ids_len: usize,
+    called_flags_ptr: *const u8,
+    called_flags_len: usize,
+) -> i32 {
+    // tile_ids 与 called_flags 一一对应：called_flags[index] 非 0 表示这张弃牌被鸣。
+    // 流局满贯不需要完整 round_state，把这两个紧凑数组传入即可让 Rust 复用规则。
+    if tile_ids_ptr.is_null() || called_flags_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let tile_ids = unsafe { std::slice::from_raw_parts(tile_ids_ptr, tile_ids_len) };
+    let called_flags = unsafe { std::slice::from_raw_parts(called_flags_ptr, called_flags_len) };
+    let Some(result) = is_nagashi_mangan_candidate(tile_ids, called_flags) else {
+        return ERR_INVALID_INPUT;
+    };
+    i32::from(result)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_liability_key_for_call(
+    action_type: u8,
+    called_tile_type: i32,
+    same_seat: u8,
+    has_daisangen_liability: u8,
+    has_daisuushi_liability: u8,
+    triplet_tile_types_ptr: *const i32,
+    triplet_tile_types_len: usize,
+) -> i32 {
+    // triplet_tile_types 是 Python 从 melds 中抽出的刻子/杠子牌种列表；FFI 层不接收
+    // meld 字典，也不判断副露是否 opened。返回 0/1/2 给 Python 映射成既有责任役 key。
+    if triplet_tile_types_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let triplet_tile_types =
+        unsafe { std::slice::from_raw_parts(triplet_tile_types_ptr, triplet_tile_types_len) };
+    liability_key_for_call(
+        action_type,
+        called_tile_type,
+        same_seat != 0,
+        has_daisangen_liability != 0,
+        has_daisuushi_liability != 0,
+        triplet_tile_types,
+    )
+    .map(i32::from)
+    .unwrap_or(ERR_INVALID_INPUT)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_liability_context_profile(
+    player_count: usize,
+    yakuman_total_han: i32,
+    daisangen_eval_han: i32,
+    daisangen_liable_seat: i32,
+    daisangen_liability_han: i32,
+    daisuushi_eval_han: i32,
+    daisuushi_liable_seat: i32,
+    daisuushi_liability_han: i32,
+    out_profile_ptr: *mut i32,
+    out_profile_len: usize,
+) -> i32 {
+    // out_profile 固定写入 4 个 i32：[liable_seat, liable_han, remainder_han, key_mask]。
+    // key_mask 为 0 不是错误，而是“没有包牌上下文”；错误仍统一使用 -999。
+    if out_profile_ptr.is_null() || out_profile_len < 4 {
+        return ERR_INVALID_INPUT;
+    }
+    let Some(profile) = liability_context_profile(
+        player_count,
+        yakuman_total_han,
+        daisangen_eval_han,
+        daisangen_liable_seat,
+        daisangen_liability_han,
+        daisuushi_eval_han,
+        daisuushi_liable_seat,
+        daisuushi_liability_han,
+    ) else {
+        return ERR_INVALID_INPUT;
+    };
+    let out_profile = unsafe { std::slice::from_raw_parts_mut(out_profile_ptr, out_profile_len) };
+    out_profile[..4].copy_from_slice(&profile);
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_local_mangan_yaku_code(
+    koyaku_enabled: u8,
+    is_tsumo: u8,
+    is_haitei: u8,
+    is_houtei: u8,
+    win_tile_type: i32,
+) -> i32 {
+    // 返回小整数 code，Python 再映射成既有英文展示名；这样 FFI 不暴露字符串所有权。
+    local_mangan_yaku_code(
+        koyaku_enabled != 0,
+        is_tsumo != 0,
+        is_haitei != 0,
+        is_houtei != 0,
+        win_tile_type,
+    )
+    .map(i32::from)
+    .unwrap_or(ERR_INVALID_INPUT)
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_local_yakuman_yaku_code(
+    koyaku_enabled: u8,
+    double_riichi: u8,
+    closed_hand: u8,
+    is_haitei: u8,
+    is_houtei: u8,
+) -> i32 {
+    i32::from(local_yakuman_yaku_code(
+        koyaku_enabled != 0,
+        double_riichi != 0,
+        closed_hand != 0,
+        is_haitei != 0,
+        is_houtei != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_local_han_yaku_mask(
+    koyaku_enabled: u8,
+    is_tsumo: u8,
+    has_last_discard: u8,
+    discard_is_self: u8,
+    discard_from_replacement_source: u8,
+    discard_riichi: u8,
+    discard_follows_kan: u8,
+) -> i32 {
+    i32::from(local_han_yaku_mask(
+        koyaku_enabled != 0,
+        is_tsumo != 0,
+        has_last_discard != 0,
+        discard_is_self != 0,
+        discard_from_replacement_source != 0,
+        discard_riichi != 0,
+        discard_follows_kan != 0,
+    ))
+}
+
+#[no_mangle]
+pub extern "C" fn mahjong_core_local_pattern_yaku_mask(
+    flat_tiles_ptr: *const i32,
+    flat_tiles_len: usize,
+    group_lens_ptr: *const usize,
+    group_lens_len: usize,
+) -> i32 {
+    // hand groups 经 Python 压平成两段数组：所有牌种 flat_tiles，以及每组长度 group_lens。
+    // Rust 根据 group_lens 还原边界；如果长度总和不匹配，返回 -999 让 Python 兜底。
+    if flat_tiles_ptr.is_null() || group_lens_ptr.is_null() {
+        return ERR_INVALID_INPUT;
+    }
+    let flat_tiles = unsafe { std::slice::from_raw_parts(flat_tiles_ptr, flat_tiles_len) };
+    let group_lens = unsafe { std::slice::from_raw_parts(group_lens_ptr, group_lens_len) };
+    local_pattern_yaku_mask(flat_tiles, group_lens)
+        .map(i32::from)
+        .unwrap_or(ERR_INVALID_INPUT)
 }
 
 #[no_mangle]

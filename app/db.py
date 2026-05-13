@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -76,3 +76,30 @@ def init_db() -> None:
 
     ensure_mysql_database()
     Base.metadata.create_all(bind=engine)
+    ensure_runtime_indexes()
+
+
+def ensure_runtime_indexes() -> None:
+    """为旧库补上 create_all 不会自动添加的查询索引。
+
+    SQLAlchemy 的 `create_all()` 只会创建缺失表，不会修改已存在的 `games` 表。
+    当前历史列表和统计都依赖 `updated_at/status/player_name`，旧库没有这些组合索引时，
+    MySQL 可能在排序大 JSON 行时触发 sort buffer 压力。
+    """
+
+    inspector = inspect(engine)
+    if "games" not in inspector.get_table_names():
+        return
+
+    existing_names = {item["name"] for item in inspector.get_indexes("games")}
+    index_sql = {
+        "ix_games_updated_at": "CREATE INDEX ix_games_updated_at ON games (updated_at)",
+        "ix_games_status_updated_at": "CREATE INDEX ix_games_status_updated_at ON games (status, updated_at)",
+        "ix_games_player_status_updated_at": (
+            "CREATE INDEX ix_games_player_status_updated_at ON games (player_name, status, updated_at)"
+        ),
+    }
+    with engine.begin() as connection:
+        for index_name, sql in index_sql.items():
+            if index_name not in existing_names:
+                connection.execute(text(sql))

@@ -1,7 +1,7 @@
 ﻿import React, { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AnimatePresence, motion, useDragControls } from 'framer-motion';
-import { BarChart3, Clapperboard, History, Lightbulb, Radar, ScrollText, Settings2, UserRound, X } from 'lucide-react';
+import { BarChart3, Clapperboard, History, Lightbulb, Pause, Play, Radar, ScrollText, Settings2, UserRound, X } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,12 @@ const AI_MOVE_DELAY_OPTIONS = [
   { value: 1000, label: '1 秒' },
   { value: 2000, label: '2 秒' },
   { value: 3000, label: '3 秒' },
+] as const;
+
+const REPLAY_SPEED_OPTIONS = [
+  { value: 1500, label: '慢速' },
+  { value: 900, label: '标准' },
+  { value: 450, label: '快速' },
 ] as const;
 
 const AI_LEVEL_OPTION_TEXT: Record<number, string> = {
@@ -1216,9 +1222,18 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
     ...options,
   });
 
-  const data = await response.json();
+  const rawBody = await response.text();
+  let data: unknown = null;
+  if (rawBody) {
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      data = { detail: rawBody };
+    }
+  }
   if (!response.ok) {
-    throw new Error(data.detail || '请求失败');
+    const detail = data && typeof data === 'object' && 'detail' in data ? String(data.detail) : '';
+    throw new Error(detail || `请求失败（HTTP ${response.status}）`);
   }
   return data as T;
 }
@@ -2717,6 +2732,8 @@ export const Table: React.FC = () => {
   const [stats, setStats] = useState<PlayerStats | null>(null);
   const [replay, setReplay] = useState<ReplayView | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  const [replaySpeed, setReplaySpeed] = useState<(typeof REPLAY_SPEED_OPTIONS)[number]['value']>(900);
   const [error, setError] = useState<string | null>(null);
   const [busyText, setBusyText] = useState<string | null>(null);
   const [uiPending, setUiPending] = useState(false);
@@ -2733,6 +2750,7 @@ export const Table: React.FC = () => {
   const replaySnapshot = replay?.snapshots[replayIndex] ?? null;
   const replayTotalSteps = replay?.snapshots.length ?? 0;
   const replayHasSteps = replayTotalSteps > 0;
+  const replayAtEnd = replayHasSteps && replayIndex >= replayTotalSteps - 1;
   const replayProgressPercent = replayHasSteps && replayTotalSteps > 1 ? (replayIndex / (replayTotalSteps - 1)) * 100 : 0;
   const replayCurrentEntry = useMemo(() => {
     if (!replaySnapshot) {
@@ -2757,6 +2775,7 @@ export const Table: React.FC = () => {
     : replay
       ? '拖动时间轴或使用步进按钮，查看整局变化。'
       : '载入历史对局后，可以沿着时间轴回看整局进程。';
+  const replayPlaybackStatus = replayPlaying ? '自动播放中' : replay ? (replayAtEnd ? '已到末手' : '已暂停') : '未载入';
   const replayRoundResult = useMemo(() => {
     return isRecord(activeView?.round_result) ? activeView.round_result : null;
   }, [activeView]);
@@ -3048,6 +3067,29 @@ export const Table: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    // 自动播放不是一次性把所有帧跑完，而是每到一帧就重新排队下一次 setTimeout。
+    // 这里必须依赖 replayIndex：当前帧推进后 React 才会重新执行这个 effect，
+    // 旧计时器会被清掉，然后按照最新速度、最新牌谱长度继续安排下一帧。
+    if (!replay || !replayHasSteps || replayAtEnd) {
+      if (replayPlaying) {
+        setReplayPlaying(false);
+      }
+      return;
+    }
+    if (!replayPlaying) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setReplayIndex((current) => Math.min(replayTotalSteps - 1, current + 1));
+    }, replaySpeed);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [replay, replayAtEnd, replayHasSteps, replayIndex, replayPlaying, replaySpeed, replayTotalSteps]);
+
   const handleDockSelect = useCallback(
     (key: DockPanelKey) => {
       const nextKey = activeDockPanel === key ? null : key;
@@ -3064,6 +3106,25 @@ export const Table: React.FC = () => {
       setActiveDockPanel(null);
     });
     updateDockRoute(null);
+  }, []);
+
+  const handleReplayPlayPause = useCallback(() => {
+    if (!replay || !replayHasSteps) {
+      return;
+    }
+    if (replayPlaying) {
+      setReplayPlaying(false);
+      return;
+    }
+    if (replayAtEnd) {
+      setReplayIndex(0);
+    }
+    setReplayPlaying(true);
+  }, [replay, replayAtEnd, replayHasSteps, replayPlaying]);
+
+  const handleReplaySeek = useCallback((nextIndex: number) => {
+    setReplayPlaying(false);
+    setReplayIndex(nextIndex);
   }, []);
 
   const setLoadingState = (text: string | null, pending: boolean) => {
@@ -3197,6 +3258,7 @@ export const Table: React.FC = () => {
         }),
       });
       startTransition(() => {
+        setReplayPlaying(false);
         setReplay(null);
         setReplayIndex(0);
       });
@@ -3210,6 +3272,7 @@ export const Table: React.FC = () => {
       playbackTokenRef.current += 1;
       const response = await api<PublicGameView>(`/api/games/${gameId}`);
       startTransition(() => {
+        setReplayPlaying(false);
         setReplay(null);
         setReplayIndex(0);
         setPlayerName(response.players.find((player) => player.is_human)?.name ?? '访客');
@@ -3240,6 +3303,7 @@ export const Table: React.FC = () => {
       startTransition(() => {
         if (currentGame?.game_id === gameId) {
           setCurrentGame(null);
+          setReplayPlaying(false);
           setReplay(null);
           setReplayIndex(0);
           setResultModalOpen(false);
@@ -3271,6 +3335,7 @@ export const Table: React.FC = () => {
       playbackTokenRef.current += 1;
       const response = await api<ReplayView>(`/api/games/${currentGame.game_id}/replay`);
       startTransition(() => {
+        setReplayPlaying(false);
         setReplay(response);
         setReplayIndex(Math.max(0, response.snapshots.length - 1));
       });
@@ -3752,6 +3817,7 @@ export const Table: React.FC = () => {
                     disabled={!replay}
                     onClick={() => {
                       startTransition(() => {
+                        setReplayPlaying(false);
                         setReplay(null);
                         setReplayIndex(0);
                       });
@@ -3765,6 +3831,7 @@ export const Table: React.FC = () => {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="mahjong-replay-pill">{replay ? '牌谱回看中' : '实时牌桌'}</span>
+                        <span className="mahjong-replay-pill mahjong-replay-pill-soft">{replayPlaybackStatus}</span>
                         <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold tracking-[0.16em] text-white/58">
                           {replayFrameRoundText}
                         </span>
@@ -3781,6 +3848,33 @@ export const Table: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                    <Button
+                      variant="outline"
+                      className={cn('mahjong-console-ghost mahjong-replay-play', replayPlaying ? 'is-playing' : '')}
+                      disabled={!replay || !replayHasSteps}
+                      onClick={handleReplayPlayPause}
+                    >
+                      {replayPlaying ? <Pause className="h-4 w-4" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                      {replayPlaying ? '暂停播放' : replayAtEnd ? '从头播放' : '自动播放'}
+                    </Button>
+                    <label className="mahjong-replay-speed-control">
+                      <span>速度</span>
+                      <select
+                        value={replaySpeed}
+                        onChange={(event) => setReplaySpeed(Number(event.target.value) as typeof replaySpeed)}
+                        disabled={!replay}
+                        aria-label="回放播放速度"
+                      >
+                        {REPLAY_SPEED_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
                   <div className="mt-4">
                     <div className="mahjong-replay-track">
                       <div className="mahjong-replay-track-fill" style={{ width: `${replayProgressPercent}%` }} />
@@ -3790,23 +3884,23 @@ export const Table: React.FC = () => {
                         max={Math.max(0, replayTotalSteps - 1)}
                         value={replayIndex}
                         disabled={!replay}
-                        onChange={(event) => setReplayIndex(Number(event.target.value))}
+                        onChange={(event) => handleReplaySeek(Number(event.target.value))}
                         className="mahjong-replay-range"
                       />
                     </div>
                   </div>
 
                   <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => setReplayIndex(0)}>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => handleReplaySeek(0)}>
                       回到开局
                     </Button>
-                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => setReplayIndex((current) => Math.max(0, current - 1))}>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex <= 0} onClick={() => handleReplaySeek(Math.max(0, replayIndex - 1))}>
                       上一步
                     </Button>
-                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => setReplayIndex((current) => Math.min(replayTotalSteps - 1, current + 1))}>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => handleReplaySeek(Math.min(replayTotalSteps - 1, replayIndex + 1))}>
                       下一步
                     </Button>
-                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => setReplayIndex(Math.max(0, replayTotalSteps - 1))}>
+                    <Button variant="outline" className="mahjong-console-ghost mahjong-replay-step" disabled={!replay || replayIndex >= replayTotalSteps - 1} onClick={() => handleReplaySeek(Math.max(0, replayTotalSteps - 1))}>
                       回到末手
                     </Button>
                   </div>
@@ -4679,6 +4773,7 @@ export const Table: React.FC = () => {
                 disabled={!replay}
                 onClick={() => {
                   startTransition(() => {
+                    setReplayPlaying(false);
                     setReplay(null);
                     setReplayIndex(0);
                   });
@@ -4693,6 +4788,7 @@ export const Table: React.FC = () => {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="mahjong-replay-pill">{replay ? '牌谱回看中' : '实时牌桌'}</span>
+                    <span className="mahjong-replay-pill mahjong-replay-pill-soft">{replayPlaybackStatus}</span>
                     <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold tracking-[0.16em] text-white/58">
                       {replayFrameRoundText}
                     </span>
@@ -4716,6 +4812,33 @@ export const Table: React.FC = () => {
                 </div>
               </div>
 
+              <div className="mt-4 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <Button
+                  variant="outline"
+                  className={cn('mahjong-console-ghost mahjong-replay-play', replayPlaying ? 'is-playing' : '')}
+                  disabled={!replay || !replayHasSteps}
+                  onClick={handleReplayPlayPause}
+                >
+                  {replayPlaying ? <Pause className="h-4 w-4" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+                  {replayPlaying ? '暂停播放' : replayAtEnd ? '从头播放' : '自动播放'}
+                </Button>
+                <label className="mahjong-replay-speed-control">
+                  <span>速度</span>
+                  <select
+                    value={replaySpeed}
+                    onChange={(event) => setReplaySpeed(Number(event.target.value) as typeof replaySpeed)}
+                    disabled={!replay}
+                    aria-label="回放播放速度"
+                  >
+                    {REPLAY_SPEED_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
               <div className="mt-4">
                 <div className="mahjong-replay-track">
                   <div className="mahjong-replay-track-fill" style={{ width: `${replayProgressPercent}%` }} />
@@ -4725,7 +4848,7 @@ export const Table: React.FC = () => {
                     max={Math.max(0, replayTotalSteps - 1)}
                     value={replayIndex}
                     disabled={!replay}
-                    onChange={(event) => setReplayIndex(Number(event.target.value))}
+                    onChange={(event) => handleReplaySeek(Number(event.target.value))}
                     className="mahjong-replay-range"
                   />
                 </div>
@@ -4741,7 +4864,7 @@ export const Table: React.FC = () => {
                   variant="outline"
                   className="mahjong-console-ghost mahjong-replay-step"
                   disabled={!replay || replayIndex <= 0}
-                  onClick={() => setReplayIndex(0)}
+                  onClick={() => handleReplaySeek(0)}
                 >
                   回到开局
                 </Button>
@@ -4749,7 +4872,7 @@ export const Table: React.FC = () => {
                   variant="outline"
                   className="mahjong-console-ghost mahjong-replay-step"
                   disabled={!replay || replayIndex <= 0}
-                  onClick={() => setReplayIndex((current) => Math.max(0, current - 1))}
+                  onClick={() => handleReplaySeek(Math.max(0, replayIndex - 1))}
                 >
                   上一步
                 </Button>
@@ -4757,7 +4880,7 @@ export const Table: React.FC = () => {
                   variant="outline"
                   className="mahjong-console-ghost mahjong-replay-step"
                   disabled={!replay || replayIndex >= replayTotalSteps - 1}
-                  onClick={() => setReplayIndex((current) => Math.min(replayTotalSteps - 1, current + 1))}
+                  onClick={() => handleReplaySeek(Math.min(replayTotalSteps - 1, replayIndex + 1))}
                 >
                   下一步
                 </Button>
@@ -4765,7 +4888,7 @@ export const Table: React.FC = () => {
                   variant="outline"
                   className="mahjong-console-ghost mahjong-replay-step"
                   disabled={!replay || replayIndex >= replayTotalSteps - 1}
-                  onClick={() => setReplayIndex(Math.max(0, replayTotalSteps - 1))}
+                  onClick={() => handleReplaySeek(Math.max(0, replayTotalSteps - 1))}
                 >
                   回到末手
                 </Button>

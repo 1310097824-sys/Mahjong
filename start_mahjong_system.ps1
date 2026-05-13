@@ -295,6 +295,32 @@ function Ensure-FrontendBuilt {
   }
 }
 
+function Invoke-DatabaseMigration {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ProjectRoot,
+    [Parameter(Mandatory = $true)]
+    [string]$PythonExe
+  )
+
+  $migrationScript = Join-Path $ProjectRoot 'migrate_games_to_split_tables.py'
+  if (-not (Test-Path $migrationScript)) {
+    Write-Host 'Database split migration script was not found. Skipping migration check.'
+    return
+  }
+
+  Write-Host 'Checking database schema and split-table migration...'
+  Push-Location $ProjectRoot
+  try {
+    & $PythonExe $migrationScript
+    if ($LASTEXITCODE -ne 0) {
+      throw "Database migration failed with exit code $LASTEXITCODE"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
 function Test-IsMahjongBackendProcess {
   param(
     [Parameter(Mandatory = $true)]
@@ -377,6 +403,8 @@ if ($mysqlService.Status -ne 'Running') {
   Start-Service -Name $serviceName
   $mysqlService.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
 }
+
+Invoke-DatabaseMigration -ProjectRoot $projectRoot -PythonExe $pythonExe
 
 Ensure-FrontendBuilt -ProjectRoot $projectRoot -FrontendIndex $frontendIndex
 

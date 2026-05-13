@@ -142,6 +142,11 @@ def round_label(prevalent_wind: str, hand_number: int, honba: int) -> str:
 def seat_wind_label(round_state: dict[str, Any], seat: int) -> str:
     count = round_state["player_count"]
     dealer = round_state["dealer_seat"]
+    rust_code = rust_core.seat_wind_code(count, dealer, seat)
+    if rust_code is not None:
+        # Rust 只判断座位距离是否合法并返回风位编码；这里保留字符串映射，
+        # 因为 public_state、日志和 mahjong 库配置都已经以 E/S/W/N 作为稳定接口。
+        return ["E", "S", "W", "N"][rust_code]
     if count == 4:
         order = ["E", "S", "W", "N"]
     else:
@@ -223,7 +228,18 @@ def settle_pending_double_riichi(round_state: dict[str, Any], seat: int) -> None
     pending[seat] = False
 
 def is_furiten(round_state: dict[str, Any], seat: int, win_tile_type: int) -> bool:
-    own_discards = {tile_type(item["tile"]) for item in round_state["discards"][seat]}
+    own_discard_types = [tile_type(item["tile"]) for item in round_state["discards"][seat]]
+    # 振听比较的是牌种而不是实体牌 ID，所以这里先把弃牌河转换成 0-33 的 tile type。
+    # temporary_furiten / riichi_furiten 是状态位，和弃牌振听一起交给 Rust 纯函数判断。
+    rust_value = rust_core.is_furiten(
+        win_tile_type,
+        own_discard_types,
+        round_state["temporary_furiten"][seat],
+        round_state["riichi_furiten"][seat],
+    )
+    if rust_value is not None:
+        return rust_value
+    own_discards = set(own_discard_types)
     return (
         win_tile_type in own_discards
         or round_state["temporary_furiten"][seat]

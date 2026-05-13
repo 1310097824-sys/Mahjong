@@ -31,6 +31,7 @@ from app.engine import (
     build_round,
     build_wall,
     can_double_riichi,
+    can_abortive_draw_nine_terminals,
     can_ron_on_last_discard,
     calculate_tenpai_seats,
     chi_candidates,
@@ -43,18 +44,30 @@ from app.engine import (
     finish_game,
     forced_riichi_tsumogiri_action,
     full_honba_value,
+    goal_score_reached,
     hand_route_profile,
     is_chankan_state,
+    is_chiihou_state,
+    is_haitei_state,
     is_houtei_state,
     is_honor,
+    is_furiten,
     is_renhou_state,
     is_simple,
     is_terminal,
+    is_tenhou_state,
+    is_win_like_round_result,
+    liability_context,
     kuikae_forbidden_tile_types,
     legal_tile_types_for_mode,
+    local_han_yaku_entries,
+    local_mangan_yaku_name,
+    local_pattern_entries_for_hand,
+    local_yakuman_entries,
     minimum_han_satisfied,
     new_game,
     normalize_aka_dora_count,
+    nagashi_mangan_winners,
     perform_call,
     register_liability_for_call,
     representative_tile_id,
@@ -62,6 +75,9 @@ from app.engine import (
     round_up_to_100,
     scoring_indicator_tile_id,
     score_result_total,
+    seat_wind_label,
+    should_abort_for_four_kans,
+    should_auto_stop_all_last_dealer,
     settle_abortive_draw,
     settle_exhaustive_draw,
     settle_ron,
@@ -1043,30 +1059,117 @@ def test_rust_core_bridge_consistency() -> AuditItem:
     scoring_game["round_state"]["honba"] = 2
     scoring_game["round_state"]["dealer_seat"] = 0
     scoring_cost = {"main": 3900, "main_bonus": 0, "additional": 2000, "additional_bonus": 0}
+    liability_rust_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    liability_rust_state["melds"][1] = [
+        {"type": "pon", "tiles": [124, 125, 126]},
+        {"type": "pon", "tiles": [128, 129, 130]},
+        {"type": "pon", "tiles": [132, 133, 134]},
+    ]
+    register_liability_for_call(liability_rust_state, 1, "pon", 132, 2)
+    rust_liability = copy.deepcopy(liability_rust_state["liability_payments"][1])
+    liability_eval = {"yakuman_total_han": 13, "yakuman_keys": {"DAISANGEN": 13}}
+    liability_context_rust_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    liability_context_rust_game["round_state"]["liability_payments"][1] = copy.deepcopy(rust_liability)
+    rust_liability_context = liability_context(liability_context_rust_game, 1, liability_eval)
+    local_rust_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=True)
+    local_rust_state = local_rust_game["round_state"]
+    local_rust_state["current_draw"] = 36
+    local_rust_state["current_draw_source"] = "wall"
+    local_rust_state["turn_seat"] = 0
+    local_rust_state["live_wall"] = []
+    local_rust_state["double_riichi"][0] = True
+    local_han_rust_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=True)
+    local_han_rust_game["round_state"]["last_discard"] = {"seat": 1, "tile": 36, "source": "wall", "riichi": True}
+    local_han_rust_game["action_log"] = [
+        {"type": "KAN", "seat": 1},
+        {"type": "DRAW", "seat": 1},
+        {"type": "DISCARD", "seat": 1},
+    ]
+    rust_local_yaku = (
+        local_mangan_yaku_name(local_rust_game, 0, 36, is_tsumo=True),
+        local_yakuman_entries(local_rust_game, 0, 36, is_tsumo=True),
+        local_han_yaku_entries(local_han_rust_game, 0, 36, is_tsumo=False),
+        local_pattern_entries_for_hand(
+            [[0, 1, 2], [0, 1, 2], [0, 1, 2], [3, 3, 3], [4, 4, 4], [5, 5, 5]],
+            is_open_hand=False,
+        ),
+    )
     rust_scoring_helpers = (
         round_up_to_100(550),
         score_result_total({"main": 2000, "main_bonus": 300, "additional": 1000, "additional_bonus": 300}),
         full_honba_value(scoring_game, is_tsumo=True),
         minimum_han_satisfied(scoring_game, 1, local_yaku_name="Iipin moyue"),
         tsumo_payment_map(scoring_game, 1, scoring_cost),
+        rust_liability,
+        rust_liability_context,
+        rust_local_yaku,
     )
     original_round_up = rust_core.round_up_to_100
     original_score_total = rust_core.score_result_total
     original_honba = rust_core.full_honba_value
     original_minimum_han = rust_core.minimum_han_satisfied
     original_tsumo_payments = rust_core.tsumo_payment_map
+    original_liability_key = rust_core.liability_key_for_call
+    original_liability_context = rust_core.liability_context_profile
+    original_local_mangan = rust_core.local_mangan_yaku_name
+    original_local_yakuman = rust_core.local_yakuman_entries
+    original_local_han = rust_core.local_han_yaku_entries
+    original_local_pattern = rust_core.local_pattern_entries_for_hand
     try:
         rust_core.round_up_to_100 = lambda *args, **kwargs: None
         rust_core.score_result_total = lambda *args, **kwargs: None
         rust_core.full_honba_value = lambda *args, **kwargs: None
         rust_core.minimum_han_satisfied = lambda *args, **kwargs: None
         rust_core.tsumo_payment_map = lambda *args, **kwargs: None
+        rust_core.liability_key_for_call = lambda *args, **kwargs: None
+        rust_core.liability_context_profile = lambda *args, **kwargs: None
+        rust_core.local_mangan_yaku_name = lambda *args, **kwargs: None
+        rust_core.local_yakuman_entries = lambda *args, **kwargs: None
+        rust_core.local_han_yaku_entries = lambda *args, **kwargs: None
+        rust_core.local_pattern_entries_for_hand = lambda *args, **kwargs: None
+        liability_python_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+        liability_python_state["melds"][1] = [
+            {"type": "pon", "tiles": [124, 125, 126]},
+            {"type": "pon", "tiles": [128, 129, 130]},
+            {"type": "pon", "tiles": [132, 133, 134]},
+        ]
+        register_liability_for_call(liability_python_state, 1, "pon", 132, 2)
+        python_liability = copy.deepcopy(liability_python_state["liability_payments"][1])
+        liability_context_python_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+        liability_context_python_game["round_state"]["liability_payments"][1] = copy.deepcopy(python_liability)
+        python_liability_context = liability_context(liability_context_python_game, 1, liability_eval)
+        local_python_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=True)
+        local_python_state = local_python_game["round_state"]
+        local_python_state["current_draw"] = 36
+        local_python_state["current_draw_source"] = "wall"
+        local_python_state["turn_seat"] = 0
+        local_python_state["live_wall"] = []
+        local_python_state["double_riichi"][0] = True
+        local_han_python_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=True)
+        local_han_python_game["round_state"]["last_discard"] = {"seat": 1, "tile": 36, "source": "wall", "riichi": True}
+        local_han_python_game["action_log"] = [
+            {"type": "KAN", "seat": 1},
+            {"type": "DRAW", "seat": 1},
+            {"type": "DISCARD", "seat": 1},
+        ]
+        python_local_yaku = (
+            local_mangan_yaku_name(local_python_game, 0, 36, is_tsumo=True),
+            local_yakuman_entries(local_python_game, 0, 36, is_tsumo=True),
+            local_han_yaku_entries(local_han_python_game, 0, 36, is_tsumo=False),
+            local_pattern_entries_for_hand(
+                [[0, 1, 2], [0, 1, 2], [0, 1, 2], [3, 3, 3], [4, 4, 4], [5, 5, 5]],
+                is_open_hand=False,
+            ),
+        )
         python_scoring_helpers = (
             round_up_to_100(550),
             score_result_total({"main": 2000, "main_bonus": 300, "additional": 1000, "additional_bonus": 300}),
             full_honba_value(scoring_game, is_tsumo=True),
             minimum_han_satisfied(scoring_game, 1, local_yaku_name="Iipin moyue"),
             tsumo_payment_map(scoring_game, 1, scoring_cost),
+            python_liability,
+            python_liability_context,
+            python_local_yaku,
         )
     finally:
         rust_core.round_up_to_100 = original_round_up
@@ -1074,7 +1177,147 @@ def test_rust_core_bridge_consistency() -> AuditItem:
         rust_core.full_honba_value = original_honba
         rust_core.minimum_han_satisfied = original_minimum_han
         rust_core.tsumo_payment_map = original_tsumo_payments
+        rust_core.liability_key_for_call = original_liability_key
+        rust_core.liability_context_profile = original_liability_context
+        rust_core.local_mangan_yaku_name = original_local_mangan
+        rust_core.local_yakuman_entries = original_local_yakuman
+        rust_core.local_han_yaku_entries = original_local_han
+        rust_core.local_pattern_entries_for_hand = original_local_pattern
     assert rust_scoring_helpers == python_scoring_helpers, "Rust scoring payment helpers changed Python fallback behavior"
+
+    seat_wind_state = new_game("audit", "3P", "EAST", [1, 2], enable_koyaku=False)["round_state"]
+    seat_wind_state["dealer_seat"] = 1
+    round_rule_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    round_state = round_rule_game["round_state"]
+    round_state["discards"][0] = [{"tile": 108, "called": False}]
+    round_state["temporary_furiten"][0] = True
+    four_wind_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    four_wind_state = four_wind_game["round_state"]
+    for seat in range(4):
+        four_wind_state["discards"][seat] = [{"tile": 108 + seat, "called": False}]
+    four_kan_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    four_kan_state["kan_count"] = 4
+    four_kan_state["melds"][0] = [{"type": "closed_kan", "tiles": [0, 1, 2, 3]}]
+    four_kan_state["melds"][2] = [{"type": "open_kan", "tiles": [108, 109, 110, 111]}]
+    nagashi_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    nagashi_state["discards"][0] = [{"tile": 0, "called": False}, {"tile": 32, "called": False}, {"tile": 108, "called": False}]
+    nagashi_state["discards"][1] = [{"tile": 4, "called": False}]
+    timing_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    timing_state["current_draw"] = 0
+    timing_state["current_draw_source"] = "wall"
+    timing_state["turn_seat"] = 0
+    timing_state["live_wall"] = []
+    houtei_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    houtei_state["last_discard"] = {"seat": 1, "tile": 0, "source": "wall"}
+    houtei_state["last_draw_source"][1] = "wall"
+    houtei_state["live_wall"] = []
+    chankan_state = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)["round_state"]
+    chankan_state["last_discard"] = {"seat": 1, "tile": 0, "source": "kan", "kan_type": "added_kan"}
+    renhou_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=True)
+    renhou_game["round_state"]["last_discard"] = {"seat": 0, "tile": 0, "source": "wall"}
+    nine_game = new_game("audit", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
+    nine_state = nine_game["round_state"]
+    nine_state["phase"] = "DISCARD"
+    nine_state["turn_seat"] = 0
+    nine_state["current_draw"] = 0
+    nine_state["hands"][0] = [0, 32, 36, 68, 72, 104, 108, 112, 116]
+    end_rule_game = new_game("audit", "4P", "SOUTH", [1, 2, 3], enable_koyaku=False)
+    end_rule_game["base_rounds"] = 8
+    end_rule_game["round_cursor"] = 7
+    end_rule_game["target_score"] = 30000
+    end_rule_game["round_state"]["dealer_seat"] = 0
+    end_rule_game["round_state"]["round_result"] = {"kind": "TSUMO"}
+    end_rule_game["players"][0]["points"] = 32000
+    end_rule_game["players"][1]["points"] = 30000
+    end_rule_game["players"][2]["points"] = 20000
+    end_rule_game["players"][3]["points"] = 18000
+    rust_round_helpers = (
+        is_furiten(round_state, 0, 27),
+        can_double_riichi(round_state, 1),
+        seat_wind_label(seat_wind_state, 0),
+        evaluate_pending_abortive_draw_after_discard(four_wind_game),
+        should_abort_for_four_kans(four_kan_state),
+        nagashi_mangan_winners(nagashi_state),
+        is_tenhou_state(timing_state, 0, is_tsumo=True),
+        is_chiihou_state(timing_state, 1, is_tsumo=True),
+        is_haitei_state(timing_state, 0, is_tsumo=True),
+        is_houtei_state(houtei_state, is_tsumo=False),
+        is_chankan_state(chankan_state, is_tsumo=False),
+        is_renhou_state(renhou_game, 1, is_tsumo=False),
+        can_abortive_draw_nine_terminals(nine_game, 0),
+        is_win_like_round_result(end_rule_game),
+        goal_score_reached(end_rule_game),
+        should_auto_stop_all_last_dealer(end_rule_game, dealer_continues=True),
+    )
+    original_is_furiten = rust_core.is_furiten
+    original_can_double = rust_core.can_double_riichi
+    original_seat_wind = rust_core.seat_wind_code
+    original_pending_abort = rust_core.pending_abortive_draw_kind
+    original_four_kans = rust_core.should_abort_for_four_kans
+    original_nagashi = rust_core.is_nagashi_mangan_candidate
+    original_tenhou = rust_core.is_tenhou_state
+    original_chiihou = rust_core.is_chiihou_state
+    original_haitei = rust_core.is_haitei_state
+    original_houtei = rust_core.is_houtei_state
+    original_chankan = rust_core.is_chankan_state
+    original_renhou = rust_core.is_renhou_state
+    original_nine_terminals = rust_core.can_abortive_draw_nine_terminals
+    original_win_like = rust_core.is_win_like_round_result
+    original_goal_score = rust_core.goal_score_reached
+    original_auto_stop = rust_core.should_auto_stop_all_last_dealer
+    try:
+        rust_core.is_furiten = lambda *args, **kwargs: None
+        rust_core.can_double_riichi = lambda *args, **kwargs: None
+        rust_core.seat_wind_code = lambda *args, **kwargs: None
+        rust_core.pending_abortive_draw_kind = lambda *args, **kwargs: None
+        rust_core.should_abort_for_four_kans = lambda *args, **kwargs: None
+        rust_core.is_nagashi_mangan_candidate = lambda *args, **kwargs: None
+        rust_core.is_tenhou_state = lambda *args, **kwargs: None
+        rust_core.is_chiihou_state = lambda *args, **kwargs: None
+        rust_core.is_haitei_state = lambda *args, **kwargs: None
+        rust_core.is_houtei_state = lambda *args, **kwargs: None
+        rust_core.is_chankan_state = lambda *args, **kwargs: None
+        rust_core.is_renhou_state = lambda *args, **kwargs: None
+        rust_core.can_abortive_draw_nine_terminals = lambda *args, **kwargs: None
+        rust_core.is_win_like_round_result = lambda *args, **kwargs: None
+        rust_core.goal_score_reached = lambda *args, **kwargs: None
+        rust_core.should_auto_stop_all_last_dealer = lambda *args, **kwargs: None
+        python_round_helpers = (
+            is_furiten(round_state, 0, 27),
+            can_double_riichi(round_state, 1),
+            seat_wind_label(seat_wind_state, 0),
+            evaluate_pending_abortive_draw_after_discard(four_wind_game),
+            should_abort_for_four_kans(four_kan_state),
+            nagashi_mangan_winners(nagashi_state),
+            is_tenhou_state(timing_state, 0, is_tsumo=True),
+            is_chiihou_state(timing_state, 1, is_tsumo=True),
+            is_haitei_state(timing_state, 0, is_tsumo=True),
+            is_houtei_state(houtei_state, is_tsumo=False),
+            is_chankan_state(chankan_state, is_tsumo=False),
+            is_renhou_state(renhou_game, 1, is_tsumo=False),
+            can_abortive_draw_nine_terminals(nine_game, 0),
+            is_win_like_round_result(end_rule_game),
+            goal_score_reached(end_rule_game),
+            should_auto_stop_all_last_dealer(end_rule_game, dealer_continues=True),
+        )
+    finally:
+        rust_core.is_furiten = original_is_furiten
+        rust_core.can_double_riichi = original_can_double
+        rust_core.seat_wind_code = original_seat_wind
+        rust_core.pending_abortive_draw_kind = original_pending_abort
+        rust_core.should_abort_for_four_kans = original_four_kans
+        rust_core.is_nagashi_mangan_candidate = original_nagashi
+        rust_core.is_tenhou_state = original_tenhou
+        rust_core.is_chiihou_state = original_chiihou
+        rust_core.is_haitei_state = original_haitei
+        rust_core.is_houtei_state = original_houtei
+        rust_core.is_chankan_state = original_chankan
+        rust_core.is_renhou_state = original_renhou
+        rust_core.can_abortive_draw_nine_terminals = original_nine_terminals
+        rust_core.is_win_like_round_result = original_win_like
+        rust_core.goal_score_reached = original_goal_score
+        rust_core.should_auto_stop_all_last_dealer = original_auto_stop
+    assert rust_round_helpers == python_round_helpers, "Rust round-state rule helpers changed Python fallback behavior"
 
     route_game = new_game("审计", "4P", "EAST", [1, 2, 3], enable_koyaku=False)
     route_seat = 0

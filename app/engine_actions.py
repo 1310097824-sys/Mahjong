@@ -168,6 +168,14 @@ def can_riichi_after_discard(game: dict[str, Any], seat: int, discard_tile_id: i
     return bool(tenpai_wait_tile_types(remaining, mode=game["mode"], melds_data=round_state["melds"][seat]))
 
 def can_double_riichi(round_state: dict[str, Any], seat: int) -> bool:
+    # 两立直资格只需要两个事实：该座位是否已经弃过牌、这一局是否被鸣牌打断。
+    # 这类小规则适合先迁到 Rust，完整动作生成仍留在 Python 保持可读性。
+    rust_value = rust_core.can_double_riichi(
+        bool(round_state["discards"][seat]),
+        not round_is_uninterrupted(round_state),
+    )
+    if rust_value is not None:
+        return rust_value
     return seat_is_on_first_turn(round_state, seat) and round_is_uninterrupted(round_state)
 
 def build_discard_actions(game: dict[str, Any], seat: int) -> list[ActionChoice]:

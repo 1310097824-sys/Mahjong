@@ -125,9 +125,22 @@ def local_mangan_yaku_name(game: dict[str, Any], seat: int, win_tile_id: int, *,
         return None
     round_state = game["round_state"]
     win_tile_type = tile_type(win_tile_id)
-    if is_tsumo and is_haitei_state(round_state, seat, is_tsumo=True) and win_tile_type == 9:
+    haitei = is_haitei_state(round_state, seat, is_tsumo=is_tsumo)
+    houtei = is_houtei_state(round_state, is_tsumo=is_tsumo)
+    # 古役满贯只需要开关、和牌方式、时机状态和胡牌牌种。Rust 用 code 返回命中项，
+    # Python 保留展示名，避免 FFI 传字符串。
+    rust_name = rust_core.local_mangan_yaku_name(
+        bool(game.get("koyaku_enabled", False)),
+        is_tsumo,
+        haitei,
+        houtei,
+        win_tile_type,
+    )
+    if rust_name is not None:
+        return rust_name or None
+    if is_tsumo and haitei and win_tile_type == 9:
         return "Iipin moyue"
-    if not is_tsumo and is_houtei_state(round_state, is_tsumo=False) and win_tile_type == 17:
+    if not is_tsumo and houtei and win_tile_type == 17:
         return "Chuupin raoyui"
     return None
 
@@ -142,10 +155,25 @@ def local_yakuman_entries(
         return []
 
     round_state = game["round_state"]
-    if not round_state["double_riichi"][seat] or not is_closed_hand(round_state, seat):
+    double_riichi = bool(round_state["double_riichi"][seat])
+    closed_hand = is_closed_hand(round_state, seat)
+    haitei = is_haitei_state(round_state, seat, is_tsumo=is_tsumo)
+    houtei = is_houtei_state(round_state, is_tsumo=is_tsumo)
+    # “石の上にも三年” 的条件已经能压平成几个布尔位；Rust 返回 entries 或空列表，
+    # Python 仍保留最终 [(name, han)] 结构，便于和其它本地役合并。
+    rust_entries = rust_core.local_yakuman_entries(
+        bool(game.get("koyaku_enabled", False)),
+        double_riichi,
+        closed_hand,
+        haitei,
+        houtei,
+    )
+    if rust_entries is not None:
+        return rust_entries
+    if not double_riichi or not closed_hand:
         return []
 
-    if is_haitei_state(round_state, seat, is_tsumo=is_tsumo) or is_houtei_state(round_state, is_tsumo=is_tsumo):
+    if haitei or houtei:
         return [("Ishi no ue ni mo sannen", 13)]
     return []
 
@@ -177,13 +205,35 @@ def local_han_yaku_entries(
 
     round_state = game["round_state"]
     discard = round_state.get("last_discard")
+    has_last_discard = discard is not None
+    discard_is_self = has_last_discard and discard.get("seat") == seat
+    discard_from_replacement = has_last_discard and discard.get("source") in {"kan", "kita"}
+    discard_riichi = bool(discard.get("riichi")) if has_last_discard else False
+    follows_kan = (
+        discard_follows_kan(game, discard["seat"])
+        if has_last_discard and not discard_is_self and not discard_from_replacement
+        else False
+    )
+    # Tsubame gaeshi / Kanburi 都是 1 番本地役。Rust 用 bit mask 表示命中集合，
+    # Python 再按既有顺序组装名字，避免变动前端和结算显示。
+    rust_entries = rust_core.local_han_yaku_entries(
+        bool(game.get("koyaku_enabled", False)),
+        is_tsumo,
+        has_last_discard,
+        discard_is_self,
+        discard_from_replacement,
+        discard_riichi,
+        follows_kan,
+    )
+    if rust_entries is not None:
+        return rust_entries
     if discard is None or discard.get("seat") == seat or discard.get("source") in {"kan", "kita"}:
         return []
 
     entries: list[tuple[str, int]] = []
     if discard.get("riichi"):
         entries.append(("Tsubame gaeshi", 1))
-    if discard_follows_kan(game, discard["seat"]):
+    if follows_kan:
         entries.append(("Kanburi", 1))
     return entries
 
@@ -215,6 +265,11 @@ def hand_has_isshoku_sanjun(hand: list[list[int]]) -> bool:
     return False
 
 def local_pattern_entries_for_hand(hand: list[list[int]], *, is_open_hand: bool) -> list[tuple[str, int]]:
+    # HandDivider 已经给出按组拆好的牌型。Rust 路径只识别 pattern mask，Python 仍负责
+    # 开门降番和展示名称，避免本地役文本散落到 FFI 层。
+    rust_entries = rust_core.local_pattern_entries_for_hand(hand, is_open_hand)
+    if rust_entries is not None:
+        return rust_entries
     entries: list[tuple[str, int]] = []
     if hand_has_isshoku_sanjun(hand):
         entries.append(("Isshoku sanjun", 2 if is_open_hand else 3))
@@ -668,6 +723,16 @@ def apply_tsumo_payments(
 def nagashi_mangan_winners(round_state: dict[str, Any]) -> list[int]:
     winners: list[int] = []
     for seat, discards in enumerate(round_state["discards"]):
+        # 流局满贯候选只依赖这一家的弃牌河：弃了哪些实体牌、这些弃牌是否被鸣走。
+        # Rust 路径返回 None 时代表不可用，不能把 None 当成 False，否则会吞掉兜底判断。
+        rust_value = rust_core.is_nagashi_mangan_candidate(
+            [item["tile"] for item in discards],
+            [bool(item.get("called", False)) for item in discards],
+        )
+        if rust_value is not None:
+            if rust_value:
+                winners.append(seat)
+            continue
         if not discards:
             continue
         if any(item.get("called", False) for item in discards):
@@ -690,6 +755,26 @@ def register_liability_for_call(round_state: dict[str, Any], seat: int, action_t
     liability = round_state["liability_payments"][seat]
     melds = round_state["melds"][seat]
     tile_index = tile_type(tile_id)
+    triplet_types = [
+        tile_type(meld["tiles"][0])
+        for meld in melds
+        if meld["type"] in TRIPLET_MELD_TYPES and meld["tiles"]
+    ]
+    # 包牌触发只需要“本次鸣的牌种”和当前刻子/杠子牌种集合。Python 仍负责写入
+    # liability_payments 字典，Rust 只返回要新增的责任役 key，保持状态变更集中在这里。
+    rust_key = rust_core.liability_key_for_call(
+        action_type,
+        tile_index,
+        seat == discarder,
+        set(liability),
+        triplet_types,
+    )
+    if rust_key is not None:
+        if rust_key == "DAISANGEN":
+            liability["DAISANGEN"] = {"liable_seat": discarder, "han": 13}
+        elif rust_key == "DAISUUSHI":
+            liability["DAISUUSHI"] = {"liable_seat": discarder, "han": 26}
+        return
     if tile_index in DRAGON_TYPES and "DAISANGEN" not in liability:
         if len(triplet_family_types(melds, DRAGON_TYPES)) == 3:
             liability["DAISANGEN"] = {"liable_seat": discarder, "han": 13}
@@ -703,6 +788,31 @@ def liability_context(game: dict[str, Any], winner_seat: int, evaluation: dict[s
     round_state = game["round_state"]
     ensure_round_state_defaults(round_state)
     liability_map = round_state["liability_payments"][winner_seat]
+    yakuman_keys = evaluation.get("yakuman_keys", {})
+    daisangen_liability = liability_map.get("DAISANGEN", {})
+    daisuushi_liability = liability_map.get("DAISUUSHI", {})
+    # Rust 负责把“哪些责任役同时命中、是否同一个责任人、应负责多少役满”算成一个
+    # 小 profile；Python 保留最终 dict 形状和 key 顺序，避免结算层接口发生变化。
+    rust_profile = rust_core.liability_context_profile(
+        round_state["player_count"],
+        int(evaluation.get("yakuman_total_han", 0)),
+        int(yakuman_keys.get("DAISANGEN", 0)),
+        int(daisangen_liability.get("liable_seat", -1)) if isinstance(daisangen_liability, dict) else -1,
+        int(daisangen_liability.get("han", 0)) if isinstance(daisangen_liability, dict) else 0,
+        int(yakuman_keys.get("DAISUUSHI", 0)),
+        int(daisuushi_liability.get("liable_seat", -1)) if isinstance(daisuushi_liability, dict) else -1,
+        int(daisuushi_liability.get("han", 0)) if isinstance(daisuushi_liability, dict) else 0,
+    )
+    if rust_profile is not None:
+        liable_seat, liable_han, remainder_han, key_mask = rust_profile
+        if key_mask == 0:
+            return None
+        return {
+            "liable_seat": liable_seat,
+            "liable_han": liable_han,
+            "remainder_han": remainder_han,
+            "keys": [key for bit, key in ((1, "DAISANGEN"), (2, "DAISUUSHI")) if key_mask & bit],
+        }
     matched_keys = [
         key for key in ("DAISANGEN", "DAISUUSHI") if key in evaluation.get("yakuman_keys", {}) and key in liability_map
     ]
